@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VWAP Strategy Bot</title>
+  <style>
+    :root {
+      --bg: #0b1220;
+      --panel: #111a2e;
+      --panel-2: #162238;
+      --text: #e8eefc;
+      --muted: #8fa3c7;
+      --line: rgba(255,255,255,.08);
+      --green: #22c55e;
+      --green-soft: rgba(34,197,94,.14);
+      --red: #ef4444;
+      --red-soft: rgba(239,68,68,.14);
+      --amber: #f59e0b;
+      --cyan: #38bdf8;
+      --shadow: 0 18px 50px rgba(0,0,0,.35);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(56,189,248,.18), transparent 35%),
+        radial-gradient(circle at right top, rgba(34,197,94,.10), transparent 30%),
+        linear-gradient(180deg, #07101e 0%, #0b1220 100%);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      min-height: 100vh;
+    }
+
+    .sidebar {
+      padding: 28px 22px;
+      border-right: 1px solid var(--line);
+      background: rgba(8,14,28,.55);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      margin-bottom: 30px;
+    }
+
+    .brand-mark {
+      width: 46px;
+      height: 46px;
+      border-radius: 14px;
+      background: linear-gradient(145deg, var(--cyan), var(--green));
+      box-shadow: 0 8px 24px rgba(56,189,248,.25);
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.1;
+    }
+
+    .brand p, .meta, .hint {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.05);
+      border: 1px solid var(--line);
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--red);
+      box-shadow: 0 0 0 6px rgba(239,68,68,.12);
+    }
+
+    .dot.running {
+      background: var(--green);
+      box-shadow: 0 0 0 6px rgba(34,197,94,.12);
+    }
+
+    .sidebar-card {
+      padding: 16px;
+      border-radius: var(--radius);
+      background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.03));
+      border: 1px solid var(--line);
+      margin-bottom: 16px;
+    }
+
+    .sidebar-card strong { display: block; margin-bottom: 6px; }
+
+    .main {
+      padding: 28px;
+    }
+
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .topbar h2 {
+      margin: 0 0 8px;
+      font-size: 30px;
+      letter-spacing: -.02em;
+    }
+
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      border-radius: 14px;
+      padding: 12px 18px;
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform .15s ease, opacity .15s ease, box-shadow .15s ease;
+      box-shadow: var(--shadow);
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { opacity: .55; cursor: not-allowed; box-shadow: none; }
+
+    .btn-start { background: linear-gradient(135deg, var(--green), #16a34a); }
+    .btn-stop { background: linear-gradient(135deg, var(--red), #dc2626); }
+    .btn-reset { background: linear-gradient(135deg, #f59e0b, #ea580c); }
+    .btn-emergency { background: linear-gradient(135deg, #f97316, #dc2626); }
+    .btn-export { background: linear-gradient(135deg, #38bdf8, #2563eb); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    .stat {
+      grid-column: span 3;
+      padding: 18px;
+      min-height: 120px;
+    }
+
+    .stat .label {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+      margin-bottom: 12px;
+    }
+
+    .stat .value {
+      font-size: 22px;
+      font-weight: 800;
+      line-height: 1.2;
+      word-break: break-word;
+    }
+
+    .positive { color: #8bffb0; }
+    .negative { color: #ff8d8d; }
+    .accent { color: #8ed7ff; }
+
+    .wide {
+      grid-column: span 12;
+      padding: 18px;
+    }
+
+    .half {
+      grid-column: span 6;
+      padding: 18px;
+    }
+
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .section-title h3 {
+      margin: 0;
+      font-size: 18px;
+    }
+
+    .signal-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .signal-item {
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--line);
+    }
+
+    .signal-item .k {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .signal-item .v {
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .12em;
+    }
+
+    .log-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      max-height: 360px;
+      overflow: auto;
+    }
+
+    .log-list li {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      color: #d8e4ff;
+      font-size: 13px;
+    }
+
+    .muted { color: var(--muted); }
+
+    @media (max-width: 1100px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .stat { grid-column: span 6; }
+      .half { grid-column: span 12; }
+      .signal-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 700px) {
+      .main { padding: 18px; }
+      .topbar { flex-direction: column; }
+      .stat { grid-column: span 12; }
+      .signal-grid { grid-template-columns: 1fr; }
+      .grid { gap: 12px; }
+      th, td { padding: 10px 8px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"></div>
+        <div>
+          <h1>VWAP Strategy Bot</h1>
+          <p>Intraday options dashboard</p>
+        </div>
+      </div>
+
+      <div class="status-pill">
+        <span id="statusDot" class="dot"></span>
+        <span id="statusText">Stopped</span>
+      </div>
+
+      <div class="sidebar-card">
+        <strong>Live Clock</strong>
+        <div id="liveClock">--</div>
+        <p class="meta">IST local time</p>
+      </div>
+
+      <div class="sidebar-card">
+        <strong>Connection</strong>
+        <div id="connStatus">Waiting for bot</div>
+        <p class="meta">API polls every 5 seconds</p>
+      </div>
+
+      <div class="sidebar-card">
+        <strong>How it works</strong>
+        <p class="hint">The bot checks NIFTY VWAP, picks CE or PE, waits for an option VWAP crossover, then waits for the next candle and confirms entry when price stays above the signal close.</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div>
+          <h2>VWAP Strategy Control Room</h2>
+          <div class="meta">Paper mode by default. Keep an eye on the active signal, trade log, and bot messages.</div>
+        </div>
+        <div class="controls">
+          <button id="startBtn" class="btn-start">Start Bot</button>
+          <button id="stopBtn" class="btn-stop">Stop Bot</button>
+          <button id="resetBtn" class="btn-reset">Reset Paper Data</button>
+          <button id="emergencyBtn" class="btn-emergency">Emergency Exit</button>
+          <button id="exportBtn" class="btn-export">Download Trades CSV</button>
+          <button id="signalAuditBtn" class="btn-export">Download Signal Audit CSV</button>
+        </div>
+      </div>
+
+      <section class="grid">
+        <div class="card stat">
+          <div class="label">Market Direction</div>
+          <div id="direction" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Selected Option</div>
+          <div id="selectedOption" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Setup Status</div>
+          <div id="setupStatus" class="value">Idle</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Daily P&amp;L</div>
+          <div id="dailyPnl" class="value">0.00</div>
+        </div>
+
+        <div class="card stat">
+          <div class="label">Active Trade</div>
+          <div id="activeTrade" class="value">None</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Trades Today</div>
+          <div id="tradesToday" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Last Checked</div>
+          <div id="lastChecked" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Bot Thread</div>
+          <div id="botThread" class="value">Stopped</div>
+        </div>
+        <div class="card stat">
+          <div class="label">LTP Monitor</div>
+          <div id="ltpMonitor" class="value">Stopped</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Bot Uptime</div>
+          <div id="botUptime" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">API Status</div>
+          <div id="apiStatus" class="value">DISCONNECTED</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Last API Call</div>
+          <div id="lastApiCall" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Total API Calls</div>
+          <div id="totalApiCalls" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Failed Calls</div>
+          <div id="failedCalls" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Rate Limit Hits</div>
+          <div id="rateLimitHits" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Last LTP Update</div>
+          <div id="lastLtpUpdate" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Data Source</div>
+          <div id="dataSource" class="value">LIVE</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Data Feed</div>
+          <div id="dataFeed" class="value">REST</div>
+        </div>
+        <div class="card stat">
+          <div class="label">WebSocket Status</div>
+          <div id="websocketStatus" class="value">DISCONNECTED</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Order Mode</div>
+          <div id="orderMode" class="value">PAPER</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Market Status</div>
+          <div id="marketStatus" class="value">CLOSED</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Historical Anchor</div>
+          <div id="historicalAnchor" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Lot Size</div>
+          <div id="lotSize" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Effective Quantity</div>
+          <div id="effectiveQuantity" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">SL Order ID</div>
+          <div id="slOrderId" class="value">--</div>
+        </div>
+        <div class="card stat">
+          <div class="label">SL Status</div>
+          <div id="slStatus" class="value">--</div>
+        </div>
+
+        <div class="card wide">
+          <div class="section-title">
+            <h3 id="signalSectionTitle">Current Signal</h3>
+            <span id="signalSectionSubtitle" class="muted">ATM strike, selected ITM strike, and confirmation status for the latest VWAP crossover</span>
+          </div>
+          <div class="signal-grid">
+            <div class="signal-item"><span id="sigEntryLabel" class="k">ATM Strike</span><span id="sigEntry" class="v">--</span></div>
+            <div class="signal-item"><span id="sigSlLabel" class="k">Entry Trigger</span><span id="sigSl" class="v">--</span></div>
+            <div class="signal-item"><span id="sigTargetLabel" class="k">Stop Loss</span><span id="sigTarget" class="v">--</span></div>
+            <div class="signal-item"><span id="sigExpiryLabel" class="k">Waiting For Confirmation</span><span id="sigExpiry" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Crossover Close</span><span id="sigClose" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Signal Created At</span><span id="sigCreatedAt" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Signal Expires At</span><span id="sigExpiresAt" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Confirmation Starts At</span><span id="sigConfirmStart" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Expiry Countdown</span><span id="sigCountdown" class="v">--</span></div>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <div class="section-title">
+            <h3>Open Position</h3>
+            <span class="muted">Live trade snapshot and MTM</span>
+          </div>
+          <div class="signal-grid">
+            <div class="signal-item"><span class="k">Trade ID</span><span id="posTradeId" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Entry Price</span><span id="posEntryPrice" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Current LTP</span><span id="posCurrentLtp" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Stop Loss</span><span id="posStopLoss" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Target</span><span id="posTarget" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Entry Time</span><span id="posEntryTime" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Time In Trade</span><span id="posTimeInTrade" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Unrealized P&amp;L</span><span id="posMtm" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Filled Qty</span><span id="posFilledQty" class="v">--</span></div>
+            <div class="signal-item"><span class="k">Avg Fill Price</span><span id="posAvgFill" class="v">--</span></div>
+          </div>
+        </div>
+
+        <div class="card wide">
+          <div class="section-title">
+            <h3>Trade Log</h3>
+            <span class="muted">Today's completed trades</span>
+          </div>
+          <div style="overflow:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Trade ID</th>
+                  <th>Time</th>
+                  <th>Option</th>
+                  <th>Entry</th>
+                  <th>Filled Qty</th>
+                  <th>Avg Fill</th>
+                  <th>SL</th>
+                  <th>Target</th>
+                  <th>Exit</th>
+                  <th>P&amp;L</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody id="tradeTableBody">
+                <tr><td colspan="11" class="muted">No trades yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card half">
+          <div class="section-title">
+            <h3>Activity Log</h3>
+            <span class="muted">Last 50 bot messages</span>
+          </div>
+          <ul id="activityLog" class="log-list"></ul>
+        </div>
+
+        <div class="card half">
+          <div class="section-title">
+            <h3>Risk Notes</h3>
+            <span class="muted">Read before going live</span>
+          </div>
+          <p class="hint">This bot is built for intraday testing first. Keep PAPER_TRADE=True until you are comfortable with the flow, then switch to live trading only if your credentials and risk controls are verified.</p>
+          <p class="hint">If the lot size looks wrong, check your .env file. The dashboard will keep showing the latest bot state even when the market is closed.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const state = {
+      botRunning: false,
+      lastPayload: null
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    function fmtMoney(value) {
+      const num = Number(value || 0);
+      const sign = num > 0 ? '+' : '';
+      return `${sign}${num.toFixed(2)}`;
+    }
+
+    function fmtValue(value, fallback = '--') {
+      if (value === null || value === undefined || value === '') return fallback;
+      return value;
+    }
+
+    function parseIstDate(value) {
+      if (!value) return null;
+      if (value instanceof Date) return value;
+      const normalized = String(value).replace(' ', 'T');
+      const parsed = new Date(`${normalized}+05:30`);
+      return Number.isNaN(parsed.getTime()) ? null : parsed;
+    }
+
+    function formatCountdown(value) {
+      const target = parseIstDate(value);
+      if (!target) return '--';
+      const diff = target.getTime() - Date.now();
+      if (diff <= 0) return 'Expired';
+      const totalSeconds = Math.floor(diff / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+
+    function setText(id, value, className = '') {
+      const el = $(id);
+      el.textContent = value;
+      el.className = className ? `value ${className}` : 'value';
+    }
+
+    function updateClock() {
+      const now = new Date();
+      const text = new Intl.DateTimeFormat('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        dateStyle: 'medium',
+        timeStyle: 'medium'
+      }).format(now);
+      $('liveClock').textContent = text;
+    }
+
+    function renderTradeLog(trades) {
+      const tbody = $('tradeTableBody');
+      if (!trades || !trades.length) {
+        tbody.innerHTML = '<tr><td colspan="11" class="muted">No trades yet.</td></tr>';
+        return;
+      }
+
+      tbody.innerHTML = trades.slice().reverse().map((trade) => {
+        const pnl = Number(trade.pnl || 0);
+        const pnlClass = pnl >= 0 ? 'positive' : 'negative';
+        return `
+          <tr>
+            <td>${fmtValue(trade.trade_id)}</td>
+            <td>${fmtValue(trade.exit_time || trade.entry_time)}</td>
+            <td>${fmtValue(trade.symbol)}</td>
+            <td>${fmtValue(trade.entry_price)}</td>
+            <td>${fmtValue(trade.filled_quantity)}</td>
+            <td>${fmtValue(trade.average_fill_price)}</td>
+            <td>${fmtValue(trade.sl)}</td>
+            <td>${fmtValue(trade.target)}</td>
+            <td>${fmtValue(trade.exit_price)}</td>
+            <td class="${pnlClass}">${fmtMoney(pnl)}</td>
+            <td class="${pnlClass}">${fmtValue(trade.result)}</td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    function renderLogs(logs) {
+      const list = $('activityLog');
+      const items = (logs || []).slice(-50);
+      list.innerHTML = items.length
+        ? items.map(line => `<li>${line}</li>`).join('')
+        : '<li class="muted">No activity yet.</li>';
+      list.scrollTop = list.scrollHeight;
+    }
+
+    function renderStatus(data) {
+      state.lastPayload = data;
+      state.botRunning = Boolean(data.bot_running || data.bot_thread_alive);
+      const trade = data.active_trade_public || null;
+      const signal = data.public_signal || data.signal || null;
+
+      $('statusDot').className = state.botRunning ? 'dot running' : 'dot';
+      $('statusText').textContent = state.botRunning ? 'Running' : 'Stopped';
+      $('connStatus').textContent = data.connection_status || (state.botRunning ? 'running' : 'stopped');
+      $('botThread').textContent = data.bot_thread_alive ? 'Alive' : 'Stopped';
+      $('ltpMonitor').textContent = data.ltp_monitor_running ? 'Running' : 'Stopped';
+      $('botUptime').textContent = fmtValue(data.bot_uptime);
+      $('apiStatus').textContent = data.api_connected ? 'CONNECTED ✅' : 'DISCONNECTED ❌';
+      $('lastApiCall').textContent = fmtValue(data.last_api_call);
+      $('totalApiCalls').textContent = fmtValue(data.total_api_calls || 0);
+      $('failedCalls').textContent = fmtValue(data.failed_api_calls || 0);
+      $('rateLimitHits').textContent = fmtValue(data.rate_limit_hits || 0);
+      $('lastLtpUpdate').textContent = fmtValue(data.last_ltp_update);
+      $('dataSource').textContent = data.data_source || 'LIVE';
+      $('dataFeed').textContent = data.data_feed || 'REST';
+      $('websocketStatus').textContent = data.websocket_status || 'DISCONNECTED';
+      $('orderMode').textContent = data.order_mode || 'PAPER';
+      $('marketStatus').textContent = data.market_status || 'CLOSED';
+      $('historicalAnchor').textContent = data.historical_anchor || '--';
+      $('lotSize').textContent = fmtValue(data.lot_size);
+      $('effectiveQuantity').textContent = fmtValue(data.effective_quantity);
+      $('slOrderId').textContent = fmtValue(data.sl_order_id);
+      $('slStatus').textContent = fmtValue(data.sl_status);
+      $('direction').textContent = fmtValue(data.direction);
+      $('selectedOption').textContent = fmtValue(data.selected_option);
+      $('setupStatus').textContent = data.setup_status || (trade ? 'In Trade' : (signal ? 'Signal Active' : (state.botRunning ? 'Scanning' : 'Idle')));
+      $('setupStatus').className = `value ${trade || signal ? 'accent' : ''}`;
+      $('dailyPnl').textContent = fmtMoney(data.daily_pnl);
+      $('dailyPnl').className = `value ${Number(data.daily_pnl || 0) >= 0 ? 'positive' : 'negative'}`;
+      $('activeTrade').textContent = trade ? `${trade.symbol} (${fmtValue(trade.trade_id)})` : 'None';
+      $('tradesToday').textContent = String(data.trades_today || 0);
+      $('lastChecked').textContent = fmtValue(data.last_check_time);
+
+      if (trade) {
+        $('signalSectionTitle').textContent = 'Open Trade Snapshot';
+        $('signalSectionSubtitle').textContent = 'Live position values while a trade is open';
+        $('sigEntryLabel').textContent = 'Trade ID';
+        $('sigSlLabel').textContent = 'Entry Price';
+        $('sigTargetLabel').textContent = 'Current LTP';
+        $('sigExpiryLabel').textContent = 'Time In Trade';
+        $('sigEntry').textContent = fmtValue(trade.trade_id);
+        $('sigSl').textContent = fmtValue(trade.entry_price);
+        $('sigTarget').textContent = fmtValue(trade.current_ltp);
+        $('sigExpiry').textContent = fmtValue(trade.time_in_trade);
+        $('sigCreatedAt').textContent = '--';
+        $('sigExpiresAt').textContent = '--';
+        $('sigConfirmStart').textContent = '--';
+        $('sigCountdown').textContent = '--';
+        $('sigClose').textContent = '--';
+      } else {
+        $('signalSectionTitle').textContent = 'Current Signal';
+        $('signalSectionSubtitle').textContent = 'ATM strike, selected ITM strike, and confirmation status for the latest VWAP crossover';
+        $('sigEntryLabel').textContent = 'ATM Strike';
+        $('sigSlLabel').textContent = 'Entry Trigger';
+        $('sigTargetLabel').textContent = 'Stop Loss';
+        $('sigExpiryLabel').textContent = 'Waiting For Confirmation';
+        const atmStrike = signal ? signal.atm_strike : data.atm_strike;
+        const entryTrigger = signal ? (signal.crossover_high || signal.entry || signal.signal_high) : (data.crossover_high || data.entry || data.signal_high);
+        const stopLoss = signal ? (signal.crossover_low || signal.sl || signal.signal_low) : (data.crossover_low || data.sl || data.signal_low);
+        const crossoverClose = signal ? (signal.crossover_close || signal.signal_close) : (data.crossover_close || data.signal_close);
+        const waiting = signal ? signal.waiting_for_confirmation : null;
+        $('sigEntry').textContent = fmtValue(atmStrike);
+        $('sigSl').textContent = fmtValue(entryTrigger);
+        $('sigTarget').textContent = fmtValue(stopLoss);
+        $('sigExpiry').textContent = waiting === null ? 'No active signal' : (waiting ? 'Yes' : 'No');
+        $('sigCreatedAt').textContent = signal ? fmtValue(signal.signal_created_at) : '--';
+        $('sigExpiresAt').textContent = signal ? fmtValue(signal.signal_expiry_time) : '--';
+        $('sigConfirmStart').textContent = signal ? fmtValue(signal.confirmation_candle_start) : '--';
+        $('sigCountdown').textContent = signal ? formatCountdown(signal.signal_expiry_time) : '--';
+        $('sigClose').textContent = fmtValue(crossoverClose);
+      }
+
+      $('posTradeId').textContent = trade ? fmtValue(trade.trade_id) : '--';
+      $('posEntryPrice').textContent = trade ? fmtValue(trade.entry_price) : '--';
+      $('posCurrentLtp').textContent = trade ? fmtValue(trade.current_ltp) : '--';
+      $('posStopLoss').textContent = trade ? fmtValue(trade.sl) : '--';
+      $('posTarget').textContent = trade ? fmtValue(trade.target) : '--';
+      $('posEntryTime').textContent = trade ? fmtValue(trade.entry_time) : '--';
+      $('posTimeInTrade').textContent = trade ? fmtValue(trade.time_in_trade) : '--';
+      $('posMtm').textContent = trade ? fmtMoney(trade.unrealized_pnl || trade.mtm || 0) : '--';
+      $('posFilledQty').textContent = trade ? fmtValue(trade.filled_quantity) : '--';
+      $('posAvgFill').textContent = trade ? fmtValue(trade.average_fill_price) : '--';
+
+      renderTradeLog(data.trade_log_public || data.trade_log || []);
+      renderLogs(data.recent_logs || []);
+    }
+
+    async function fetchStatus() {
+      try {
+        const response = await fetch('/api/status', { cache: 'no-store' });
+        const data = await response.json();
+        renderStatus(data);
+      } catch (error) {
+        $('connStatus').textContent = 'API unavailable';
+        $('statusText').textContent = 'Disconnected';
+        $('statusDot').className = 'dot';
+      }
+    }
+
+    async function toggleBot(path) {
+      const button = path === '/api/start' ? $('startBtn') : $('stopBtn');
+      button.disabled = true;
+      try {
+        await fetch(path, { method: 'POST' });
+        await fetchStatus();
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function emergencyExit() {
+      const button = $('emergencyBtn');
+      if (!confirm('Execute emergency exit now? This will close any open trade and stop the bot.')) {
+        return;
+      }
+      button.disabled = true;
+      try {
+        await fetch('/api/emergency_exit', { method: 'POST' });
+        await fetchStatus();
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function resetPaperData() {
+      const button = $('resetBtn');
+      if (!confirm('This will erase all paper trades and P&L. Continue?')) {
+        return;
+      }
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/reset', { method: 'POST' });
+        const data = await response.json();
+        if (!response.ok || !data.ok) {
+          alert(data.message || 'Reset failed.');
+          return;
+        }
+        await fetchStatus();
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function downloadTrades() {
+      window.location.href = '/api/export_trades';
+    }
+
+    function downloadSignalAudit() {
+      window.location.href = '/api/export_signal_audit';
+    }
+
+    $('startBtn').addEventListener('click', () => toggleBot('/api/start'));
+    $('stopBtn').addEventListener('click', () => toggleBot('/api/stop'));
+    $('resetBtn').addEventListener('click', resetPaperData);
+    $('emergencyBtn').addEventListener('click', emergencyExit);
+    $('exportBtn').addEventListener('click', downloadTrades);
+    $('signalAuditBtn').addEventListener('click', downloadSignalAudit);
+
+    updateClock();
+    fetchStatus();
+    setInterval(updateClock, 1000);
+    setInterval(fetchStatus, 5000);
+  </script>
+</body>
+</html>
