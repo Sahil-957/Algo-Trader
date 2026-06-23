@@ -1,0 +1,1310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VWAP Bot — Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0c0f14;
+      --s1:      #131922;
+      --s2:      #1a2132;
+      --s3:      #1e2638;
+      --border:  #232d3f;
+      --text:    #d4dae8;
+      --t2:      #5e6f88;
+      --dim:     #384357;
+      --green:   #25a36b;
+      --red:     #c84a4a;
+      --amber:   #b07428;
+      --blue:    #3d6dba;
+      --r:       6px;
+    }
+
+    html, body { height: 100%; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── App shell ── */
+    .app {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 0 28px 60px;
+    }
+
+    /* ── Top bar ── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+    }
+    .topbar-left  { display: flex; align-items: center; gap: 16px; }
+    .topbar-right { display: flex; align-items: center; gap: 10px; }
+    .brand { font-size: 14px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+    .back-link { font-size: 11px; color: var(--t2); text-decoration: none; }
+    .back-link:hover { color: var(--text); }
+
+    /* ── Section heading ── */
+    .section-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .section-head span {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--t2);
+      white-space: nowrap;
+    }
+    .section-head::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--s1);
+      border: 1px solid var(--border);
+      border-radius: var(--r);
+      padding: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    }
+    .inset {
+      background: var(--s2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 10px 12px;
+    }
+    .card-accent-green { border-left: 2px solid var(--green); }
+    .card-accent-red   { border-left: 2px solid var(--red); }
+
+    /* ── Field label ── */
+    .fl {
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--t2);
+      margin-bottom: 5px;
+    }
+
+    /* ── Numbers ── */
+    .n { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
+    .n-xl  { font-size: 28px; font-weight: 700; line-height: 1; }
+    .n-lg  { font-size: 20px; font-weight: 700; line-height: 1; }
+    .n-md  { font-size: 15px; font-weight: 600; }
+    .n-sm  { font-size: 13px; font-weight: 500; }
+    .n-xs  { font-size: 11px; }
+
+    /* ── Color utilities ── */
+    .cg { color: var(--green); }
+    .cr { color: var(--red); }
+    .ca { color: var(--amber); }
+    .cb { color: var(--blue); }
+    .ct { color: var(--text); }
+    .c2 { color: var(--t2); }
+    .cd { color: var(--dim); }
+
+    /* ── Status badge ── */
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      background: var(--s3);
+      color: var(--t2);
+      border: 1px solid var(--border);
+    }
+    .tag-green { background: rgba(37,163,107,.1); color: #31c47f; border-color: rgba(37,163,107,.25); }
+    .tag-red   { background: rgba(200,74,74,.1);  color: #e06060; border-color: rgba(200,74,74,.25); }
+    .tag-amber { background: rgba(176,116,40,.1); color: #d49040; border-color: rgba(176,116,40,.25); }
+    .tag-blue  { background: rgba(61,109,186,.1); color: #6090d8; border-color: rgba(61,109,186,.25); }
+
+    /* ── Status dot ── */
+    .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: var(--dim); flex-shrink: 0; }
+    .dot-on  { background: var(--green); }
+    .dot-off { background: var(--dim); }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 32px;
+      padding: 0 14px;
+      border-radius: var(--r);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      background: var(--s2);
+      color: var(--text);
+      text-decoration: none;
+      transition: background .12s, border-color .12s;
+      letter-spacing: -.01em;
+    }
+    .btn:hover { background: var(--s3); border-color: #2e3c54; }
+    .btn-primary { background: var(--green); color: #fff; border-color: var(--green); }
+    .btn-primary:hover { background: #208f5e; border-color: #208f5e; }
+    .btn-danger  { color: var(--red);   border-color: rgba(200,74,74,.3);   background: rgba(200,74,74,.08); }
+    .btn-danger:hover  { background: rgba(200,74,74,.15); }
+    .btn-amber   { color: var(--amber); border-color: rgba(176,116,40,.3); background: rgba(176,116,40,.08); }
+    .btn-amber:hover   { background: rgba(176,116,40,.15); }
+
+    /* ── Grid helpers ── */
+    .g  { display: grid; gap: 14px; margin-bottom: 24px; }
+    .g5 { grid-template-columns: repeat(5,1fr); }
+    .g6 { grid-template-columns: repeat(6,1fr); }
+    .g2 { grid-template-columns: 1fr 1fr; }
+    .g3 { grid-template-columns: repeat(3,1fr); }
+    .g4 { grid-template-columns: repeat(4,1fr); }
+    .g21{ grid-template-columns: 2fr 1fr; }
+    .g32{ grid-template-columns: 3fr 2fr; }
+    .gap8  { gap: 8px !important; }
+    .gap10 { gap: 10px !important; }
+
+    /* ── Clock area ── */
+    .clock-area { text-align: center; }
+    .clock { font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
+    .clock-date { font-size: 10px; color: var(--t2); margin-top: 1px; }
+
+    /* ── Progress bar ── */
+    .pbar { height: 3px; background: var(--s3); border-radius: 99px; overflow: hidden; }
+    .pbar-fill { height: 100%; border-radius: 99px; transition: width .4s ease; }
+    .pbar-lg { height: 5px; }
+
+    /* ── Price bar ── */
+    .price-bar-labels { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 5px; }
+
+    /* ── Table ── */
+    .tbl-wrap { overflow-y: auto; max-height: 260px; }
+    .tbl-wrap::-webkit-scrollbar { width: 3px; }
+    .tbl-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--t2); padding: 6px 10px; text-align: left;
+      border-bottom: 1px solid var(--border);
+      position: sticky; top: 0; background: #111620; z-index: 1;
+      white-space: nowrap;
+    }
+    td {
+      font-size: 12px; padding: 8px 10px;
+      border-bottom: 1px solid rgba(35,45,63,.5);
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,.02) !important; }
+    td.num-right { text-align: right; }
+
+    /* ── Scrollable log ── */
+    .log-wrap { overflow-y: auto; max-height: 195px; }
+    .log-wrap::-webkit-scrollbar { width: 3px; }
+    .log-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+    .log-line { font-size: 11px; color: var(--t2); line-height: 1.8; border-bottom: 1px solid rgba(35,45,63,.3); padding: 1px 0; }
+
+    /* ── Stack ── */
+    .stack { display: flex; flex-direction: column; gap: 14px; }
+
+    /* ── Misc ── */
+    .truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .divider  { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+    .row-risk { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .row-risk:last-child { margin-bottom: 0; }
+    .risk-lbl { font-size: 11px; color: var(--t2); width: 100px; flex-shrink: 0; }
+
+    /* ── Config inputs ── */
+    .cfg-input {
+      width: 100%;
+      background: var(--s2);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 13px;
+      font-variant-numeric: tabular-nums;
+      padding: 6px 10px;
+      outline: none;
+      transition: border-color .12s;
+      margin-top: 4px;
+    }
+    .cfg-input:focus { border-color: var(--blue); background: var(--s3); }
+    .cfg-input::-webkit-inner-spin-button { opacity: 0.4; }
+    input[type="time"].cfg-input { color-scheme: dark; }
+
+    @media (max-width: 1100px) {
+      .g5, .g6 { grid-template-columns: repeat(3,1fr); }
+      .g21, .g32, .g2 { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ══ TOP BAR ══ -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <span class="brand">VWAP Strategy Monitor</span>
+      <span id="modeBadge" class="tag">PAPER</span>
+      <a href="/" class="back-link">← Classic</a>
+    </div>
+    <div class="clock-area">
+      <div id="clock" class="clock"></div>
+      <div id="dateStr" class="clock-date"></div>
+    </div>
+    <div class="topbar-right">
+      <span id="marketBadge" class="tag">Market</span>
+      <span id="connBadge" class="tag">
+        <span class="dot dot-off" id="connDot"></span>
+        <span id="connText">Connecting</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- ══ CONTROLS ══ -->
+  <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:24px;">
+    <button onclick="doStart()" class="btn btn-primary">Start Bot</button>
+    <button onclick="doStop()" class="btn">Stop Bot</button>
+    <button onclick="doEmergency()" class="btn btn-danger">Emergency Exit</button>
+    <button onclick="doReset()" id="btnReset" class="btn btn-amber" style="display:none;">Reset Paper</button>
+    <div style="margin-left:auto;display:flex;gap:8px;">
+      <a href="/api/export_trades" class="btn">Export Trades</a>
+      <a href="/api/export_signal_audit" class="btn">Export Signals</a>
+    </div>
+    <span id="ctrlMsg" style="font-size:11px;color:var(--t2);"></span>
+  </div>
+
+  <!-- ══ KEY METRICS ══ -->
+  <div class="section-head"><span>Overview</span></div>
+  <div class="g g5">
+
+    <div class="card">
+      <div class="fl">Daily P&amp;L</div>
+      <div id="dailyPnl" class="n n-xl cd" style="margin-top:2px;">₹0</div>
+      <div id="pnlSub" style="font-size:10px;color:var(--dim);margin-top:7px;">today</div>
+    </div>
+
+    <div class="card">
+      <div class="fl">Win Rate</div>
+      <div id="winRate" class="n n-xl ct" style="margin-top:2px;">—</div>
+      <div id="winFrac" style="font-size:10px;color:var(--dim);margin-top:7px;">no trades yet</div>
+    </div>
+
+    <div class="card">
+      <div class="fl">Trades Today</div>
+      <div id="tradesToday" class="n n-xl ct" style="margin-top:2px;">0</div>
+      <div id="tradesLimitLine" style="font-size:10px;color:var(--dim);margin-top:7px;">of max —</div>
+    </div>
+
+    <div class="card">
+      <div class="fl">Open Position</div>
+      <div id="posName" class="n truncate" style="font-size:13px;font-weight:600;color:var(--dim);margin-top:6px;">None</div>
+      <div id="posUnrPnl" class="n" style="font-size:11px;color:var(--dim);margin-top:7px;">—</div>
+    </div>
+
+    <div class="card">
+      <div class="fl">Bot Status</div>
+      <div style="display:flex;align-items:center;gap:7px;margin-top:8px;">
+        <span class="dot dot-off" id="botDot"></span>
+        <span id="botLabel" class="n-md cd">Stopped</span>
+      </div>
+      <div id="botUptime" class="n" style="font-size:10px;color:var(--dim);margin-top:8px;">—</div>
+    </div>
+  </div>
+
+  <!-- ══ CHARTS ══ -->
+  <div class="section-head"><span>Performance Charts</span></div>
+  <div class="g g21">
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <span style="font-size:11px;font-weight:600;color:var(--t2);">Cumulative P&amp;L</span>
+        <span id="cumBadge" class="tag n">—</span>
+      </div>
+      <div style="position:relative;height:160px;">
+        <canvas id="pnlChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:16px;">Trade Outcomes</div>
+      <div style="height:115px;display:flex;align-items:center;justify-content:center;">
+        <canvas id="wlChart"></canvas>
+      </div>
+      <div class="g3 gap10" style="margin-top:14px;text-align:center;">
+        <div>
+          <div id="wlWins" class="n n-lg cg">0</div>
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-top:3px;">Wins</div>
+        </div>
+        <div>
+          <div id="wlLosses" class="n n-lg cr">0</div>
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-top:3px;">Losses</div>
+        </div>
+        <div>
+          <div id="wlOpen" class="n n-lg ca">0</div>
+          <div style="font-size:9px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);margin-top:3px;">Open</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ ACTIVE TRADE + SIGNAL ══ -->
+  <div class="section-head"><span>Live State</span></div>
+  <div class="g g2">
+
+    <!-- Active Trade -->
+    <div class="card" id="tradeCard">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;font-weight:600;color:var(--t2);">Active Trade</span>
+          <span class="dot dot-off" id="tradeDot"></span>
+        </div>
+        <span id="tradeDirBadge" class="tag">—</span>
+      </div>
+
+      <div id="tradeEmpty" style="padding:20px 0;color:var(--dim);text-align:center;">
+        <div style="font-size:12px;">No open position</div>
+        <div id="tradeEmptySub" class="n" style="font-size:10px;margin-top:4px;color:var(--dim);"></div>
+      </div>
+
+      <div id="tradeData" style="display:none;">
+        <div id="tradeSymbol" class="n truncate" style="font-size:12px;font-weight:600;margin-bottom:14px;color:var(--text);"></div>
+
+        <div style="margin-bottom:16px;">
+          <div class="price-bar-labels">
+            <span class="cr n-xs">SL <b id="pbSL" class="n"></b></span>
+            <span style="font-weight:700;font-size:13px;color:var(--text);" class="n">LTP <b id="pbLTP"></b></span>
+            <span class="cg n-xs">TGT <b id="pbTGT" class="n"></b></span>
+          </div>
+          <div class="pbar pbar-lg">
+            <div id="pbFill" class="pbar-fill" style="background:var(--green);width:50%;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:var(--dim);margin-top:4px;">
+            <span>Stop Loss</span><span id="pbRR" class="n c2">—</span><span>Target</span>
+          </div>
+        </div>
+
+        <div class="g3 gap8">
+          <div class="inset">
+            <div class="fl" style="margin-bottom:3px;">Entry</div>
+            <div id="tdEntry" class="n n-sm"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:3px;">Unr. P&amp;L</div>
+            <div id="tdUnrPnl" class="n n-sm"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:3px;">Time In</div>
+            <div id="tdTimeIn" class="n n-sm"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:3px;">Qty</div>
+            <div id="tdQty" class="n n-sm"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:3px;">Avg Fill</div>
+            <div id="tdFill" class="n n-sm"></div>
+          </div>
+          <div class="inset" style="overflow:hidden;">
+            <div class="fl" style="margin-bottom:3px;">SL Order</div>
+            <div id="tdSlOrder" class="n truncate" style="font-size:10px;color:var(--blue);"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Signal Panel -->
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <span style="font-size:11px;font-weight:600;color:var(--t2);">Signal</span>
+        <span id="sigStatusBadge" class="tag">Scanning</span>
+      </div>
+
+      <div id="sigEmpty">
+        <div style="padding:6px 0 14px;text-align:center;color:var(--t2);font-size:12px;">Scanning for VWAP crossover</div>
+        <div class="g2 gap8">
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Direction</div>
+            <div id="setupDir" class="n-md cd" style="margin-top:2px;">—</div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Setup Status</div>
+            <div id="setupStatus" style="font-size:12px;font-weight:500;margin-top:2px;color:var(--t2);"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">ATM Strike</div>
+            <div id="setupATM" class="n n-sm ct" style="margin-top:2px;">—</div>
+          </div>
+          <div class="inset" style="overflow:hidden;">
+            <div class="fl" style="margin-bottom:4px;">Selected Option</div>
+            <div id="setupOption" class="n truncate" style="font-size:10px;margin-top:2px;color:var(--t2);">—</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="sigData" style="display:none;">
+        <div id="sigSymbol" class="n truncate" style="font-size:12px;font-weight:600;margin-bottom:14px;color:var(--text);"></div>
+        <div class="g3 gap8" style="margin-bottom:10px;">
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Entry Trigger</div>
+            <div id="sigEntry" class="n" style="font-size:17px;font-weight:700;color:var(--text);margin-top:2px;"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Stop Loss</div>
+            <div id="sigSL" class="n cr" style="font-size:17px;font-weight:600;margin-top:2px;"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Target</div>
+            <div id="sigTgt" class="n cg" style="font-size:17px;font-weight:600;margin-top:2px;"></div>
+          </div>
+        </div>
+        <div class="g2 gap8" style="margin-bottom:10px;">
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Crossover Close</div>
+            <div id="sigClose" class="n n-sm ct"></div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:4px;">Confirmation</div>
+            <div id="sigConf" style="font-size:12px;font-weight:600;margin-top:2px;"></div>
+          </div>
+        </div>
+        <div class="inset" style="text-align:center;padding:14px 10px;">
+          <div class="fl" style="margin-bottom:6px;">Signal Expires In</div>
+          <div id="sigCountdown" class="n ca" style="font-size:22px;font-weight:700;">—</div>
+          <div id="sigExpiresAt" class="n" style="font-size:10px;color:var(--dim);margin-top:3px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══ PERFORMANCE ══ -->
+  <div class="section-head"><span>Statistics</span></div>
+  <div class="g g6">
+    <div class="card" style="text-align:center;">
+      <div class="fl">Avg Win</div>
+      <div id="avgWin" class="n n-md cg" style="margin-top:6px;">—</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div class="fl">Avg Loss</div>
+      <div id="avgLoss" class="n n-md cr" style="margin-top:6px;">—</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div class="fl">Profit Factor</div>
+      <div id="profitFactor" class="n n-md ct" style="margin-top:6px;">—</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div class="fl">Best Trade</div>
+      <div id="bestTrade" class="n n-md cg" style="margin-top:6px;">—</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div class="fl">Worst Trade</div>
+      <div id="worstTrade" class="n n-md cr" style="margin-top:6px;">—</div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <div class="fl">Max Drawdown</div>
+      <div id="maxDrawdown" class="n n-md cr" style="margin-top:6px;">—</div>
+    </div>
+  </div>
+
+  <!-- ══ TRADE HISTORY + SIDEBAR ══ -->
+  <!-- ══ SETTINGS ══ -->
+  <div class="section-head"><span>Strategy Settings</span></div>
+  <div class="card" style="margin-bottom:24px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+      <span style="font-size:11px;color:var(--t2);">Changes save to <code style="font-size:10px;background:var(--s3);padding:1px 5px;border-radius:3px;color:var(--text);">.env</code> and apply immediately. Market window &amp; interval changes require a bot restart.</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span id="cfgMsg" style="font-size:11px;color:var(--t2);"></span>
+        <button onclick="saveConfig()" class="btn btn-primary" style="height:28px;padding:0 14px;font-size:12px;">Save Settings</button>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:20px;">
+
+      <!-- Position -->
+      <div>
+        <div style="font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t2);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--border);">Position</div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgLots">Lots per Trade</label>
+          <input id="cfgLots" type="number" min="1" step="1" class="cfg-input" placeholder="1">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgATM">ATM / ITM Offset (pts)</label>
+          <input id="cfgATM" type="number" min="0" step="50" class="cfg-input" placeholder="100">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgCE">CE ITM Offset (pts)</label>
+          <input id="cfgCE" type="number" min="0" step="50" class="cfg-input" placeholder="100">
+        </div>
+        <div>
+          <label class="fl" for="cfgPE">PE ITM Offset (pts)</label>
+          <input id="cfgPE" type="number" min="0" step="50" class="cfg-input" placeholder="100">
+        </div>
+      </div>
+
+      <!-- Trade Logic -->
+      <div>
+        <div style="font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t2);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--border);">Trade Logic</div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgFixedTarget">Fixed Target (₹)
+            <span style="color:var(--green);font-style:normal;text-transform:none;letter-spacing:0;font-size:10px;">(overrides R:R when &gt; 0)</span>
+          </label>
+          <input id="cfgFixedTarget" type="number" min="0" step="1" class="cfg-input" placeholder="10">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgRR">R:R Ratio
+            <span style="color:var(--t2);font-style:normal;text-transform:none;letter-spacing:0;font-size:10px;">(used when fixed target = 0)</span>
+          </label>
+          <input id="cfgRR" type="number" min="0.5" step="0.1" class="cfg-input" placeholder="2.0">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgMaxTrades">Max Trades / Day</label>
+          <input id="cfgMaxTrades" type="number" min="1" max="20" step="1" class="cfg-input" placeholder="10">
+        </div>
+        <div>
+          <label class="fl" for="cfgSigExpiry">Signal Expiry (candles)
+            <span style="color:var(--t2);font-style:normal;text-transform:none;letter-spacing:0;font-size:10px;">(1 candle = 5 min)</span>
+          </label>
+          <input id="cfgSigExpiry" type="number" min="1" max="10" step="1" class="cfg-input" placeholder="2">
+        </div>
+      </div>
+
+      <!-- Risk Limits -->
+      <div>
+        <div style="font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t2);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--border);">Risk Limits</div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgMaxLoss">Max Daily Loss (₹)
+            <span style="color:var(--red);font-style:normal;text-transform:none;letter-spacing:0;font-size:10px;">(bot stops if hit)</span>
+          </label>
+          <input id="cfgMaxLoss" type="number" min="0" step="500" class="cfg-input" placeholder="20000">
+        </div>
+        <div>
+          <label class="fl" for="cfgMaxProfit">Max Daily Profit (₹)
+            <span style="color:var(--green);font-style:normal;text-transform:none;letter-spacing:0;font-size:10px;">(bot stops if hit)</span>
+          </label>
+          <input id="cfgMaxProfit" type="number" min="0" step="1000" class="cfg-input" placeholder="100000">
+        </div>
+      </div>
+
+      <!-- Trading Window -->
+      <div>
+        <div style="font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--t2);margin-bottom:12px;padding-bottom:6px;border-bottom:1px solid var(--border);">Trading Window <span style="color:var(--amber);font-size:9px;">restart required</span></div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgStart">Market Start (IST)</label>
+          <input id="cfgStart" type="time" class="cfg-input" placeholder="9:15">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label class="fl" for="cfgEnd">Market End (IST)</label>
+          <input id="cfgEnd" type="time" class="cfg-input" placeholder="15:30">
+        </div>
+        <div>
+          <label class="fl" for="cfgInterval">Check Interval (sec)</label>
+          <input id="cfgInterval" type="number" min="10" max="300" step="10" class="cfg-input" placeholder="60">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══ TRADE LOG + SYSTEM ══ -->
+  <div class="section-head"><span>Trade Log &amp; System</span></div>
+  <div class="g g32">
+
+    <!-- Trade table -->
+    <div class="card" style="padding-bottom:14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <span style="font-size:11px;font-weight:600;color:var(--t2);">Trade History</span>
+        <span id="tradeCntBadge" class="tag">0 trades</span>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Fill</th>
+              <th>Exit</th>
+              <th style="text-align:right;">Qty</th>
+              <th style="text-align:right;">P&amp;L</th>
+              <th>Reason</th>
+              <th>Result</th>
+            </tr>
+          </thead>
+          <tbody id="tradeTbody">
+            <tr><td colspan="10" style="text-align:center;color:var(--dim);padding:28px 10px;">No trades recorded</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="stack">
+
+      <!-- Risk Monitor -->
+      <div class="card">
+        <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:14px;">Risk Monitor</div>
+        <div class="row-risk">
+          <span class="risk-lbl">Daily P&amp;L</span>
+          <div class="pbar pbar-lg" style="flex:1;"><div id="riskPnlBar" class="pbar-fill" style="background:var(--green);width:0%;"></div></div>
+          <span id="riskPnlVal" class="n" style="font-size:11px;font-weight:600;width:80px;text-align:right;color:var(--dim);">—</span>
+        </div>
+        <div class="row-risk">
+          <span class="risk-lbl">Max Loss Used</span>
+          <div class="pbar pbar-lg" style="flex:1;"><div id="riskLossBar" class="pbar-fill" style="background:var(--red);width:0%;"></div></div>
+          <span id="riskLossVal" class="n" style="font-size:11px;font-weight:600;width:80px;text-align:right;color:var(--t2);">—</span>
+        </div>
+        <div class="row-risk">
+          <span class="risk-lbl">Trades Used</span>
+          <div class="pbar pbar-lg" style="flex:1;"><div id="riskTradesBar" class="pbar-fill" style="background:var(--blue);width:0%;"></div></div>
+          <span id="riskTradesVal" class="n" style="font-size:11px;font-weight:600;width:80px;text-align:right;color:var(--t2);">—</span>
+        </div>
+      </div>
+
+      <!-- System Health -->
+      <div class="card">
+        <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:12px;">System Health</div>
+        <div class="g2 gap8" style="margin-bottom:10px;">
+          <div class="inset">
+            <div class="fl" style="margin-bottom:2px;">API Calls</div>
+            <div id="sysTotal" class="n n-sm ct">—</div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:2px;">Failed</div>
+            <div id="sysFailed" class="n n-sm cr">—</div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:2px;">Rate Limits</div>
+            <div id="sysRateLimit" class="n n-sm ca">—</div>
+          </div>
+          <div class="inset">
+            <div class="fl" style="margin-bottom:2px;">Cache Saved</div>
+            <div id="sysCacheSave" class="n n-sm cg">—</div>
+          </div>
+        </div>
+        <div class="inset" style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span class="dot dot-off" id="wsDot"></span>
+          <span style="font-size:11px;color:var(--t2);">WebSocket</span>
+          <span id="wsStatus" class="n" style="font-size:11px;font-weight:600;color:var(--text);margin-left:auto;"></span>
+          <span id="wsTicks" class="n" style="font-size:10px;color:var(--dim);"></span>
+        </div>
+        <div class="g4 gap8">
+          <div class="inset" style="padding:6px;text-align:center;">
+            <div style="font-size:9px;color:var(--dim);">Candle</div>
+            <div id="sysCandle" class="n cb" style="font-size:12px;font-weight:600;margin-top:2px;">—</div>
+          </div>
+          <div class="inset" style="padding:6px;text-align:center;">
+            <div style="font-size:9px;color:var(--dim);">LTP</div>
+            <div id="sysLTP" class="n cb" style="font-size:12px;font-weight:600;margin-top:2px;">—</div>
+          </div>
+          <div class="inset" style="padding:6px;text-align:center;">
+            <div style="font-size:9px;color:var(--dim);">Order</div>
+            <div id="sysOrder" class="n cb" style="font-size:12px;font-weight:600;margin-top:2px;">—</div>
+          </div>
+          <div class="inset" style="padding:6px;text-align:center;">
+            <div style="font-size:9px;color:var(--dim);">Position</div>
+            <div id="sysPos" class="n cb" style="font-size:12px;font-weight:600;margin-top:2px;">—</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Activity Log -->
+      <div class="card" style="flex:1;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <span style="font-size:11px;font-weight:600;color:var(--t2);">Activity Log</span>
+          <span id="lastFetch" style="font-size:9px;color:var(--dim);"></span>
+        </div>
+        <div class="log-wrap" id="actLog">
+          <div class="log-line">Waiting for data…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="text-align:center;font-size:10px;color:var(--dim);padding-top:8px;">
+    VWAP Strategy Bot · Auto-refresh 5s · <a href="/" style="color:var(--blue);text-decoration:none;">Classic Dashboard</a>
+  </div>
+
+</div><!-- .app -->
+
+<script>
+// ── Charts ─────────────────────────────────────────────────────
+let pnlCh = null, wlCh = null;
+
+function initPnlChart() {
+  const ctx = document.getElementById('pnlChart').getContext('2d');
+  pnlCh = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: ['Start'],
+      datasets: [{
+        data: [0],
+        borderColor: '#25a36b',
+        backgroundColor: 'rgba(37,163,107,.05)',
+        borderWidth: 1.5,
+        pointRadius: 3,
+        pointBackgroundColor: '#25a36b',
+        fill: true,
+        tension: 0.3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a2132',
+          borderColor: '#232d3f',
+          borderWidth: 1,
+          titleColor: '#5e6f88',
+          bodyColor: '#d4dae8',
+          padding: 8,
+          callbacks: { label: c => ' ₹' + c.raw.toLocaleString('en-IN', {minimumFractionDigits:2}) }
+        }
+      },
+      scales: {
+        x: { grid: { color: '#1e2638' }, ticks: { color: '#384357', font: { size: 9, family:'Inter' } } },
+        y: { grid: { color: '#1e2638' }, ticks: { color: '#384357', font: { size: 9, family:'Inter' }, callback: v => '₹' + v.toLocaleString('en-IN') } }
+      }
+    }
+  });
+}
+
+function initWlChart() {
+  const ctx = document.getElementById('wlChart').getContext('2d');
+  wlCh = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Win', 'Loss', 'Open'],
+      datasets: [{
+        data: [1,0,0],
+        backgroundColor: ['rgba(56,64,87,.5)','transparent','transparent'],
+        borderColor: ['#232d3f','transparent','transparent'],
+        borderWidth: 1,
+        hoverOffset: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '74%',
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1a2132',
+          borderColor: '#232d3f',
+          borderWidth: 1,
+          callbacks: { label: c => ` ${c.label}: ${c.raw}` }
+        }
+      }
+    }
+  });
+}
+
+// ── Clock ───────────────────────────────────────────────────────
+function tickClock() {
+  const ist = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+  const p = n => String(n).padStart(2,'0');
+  document.getElementById('clock').textContent = `${p(ist.getHours())}:${p(ist.getMinutes())}:${p(ist.getSeconds())}`;
+  document.getElementById('dateStr').textContent = ist.toLocaleDateString('en-IN', { weekday:'short', day:'2-digit', month:'short', year:'numeric' });
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+// ── Helpers ─────────────────────────────────────────────────────
+const f2 = n => (n == null || n === '') ? '—' : isNaN(parseFloat(n)) ? String(n) : parseFloat(n).toFixed(2);
+function fmtPnl(n) {
+  if (n == null || n === '') return '—';
+  const v = parseFloat(n);
+  if (isNaN(v)) return '—';
+  return (v >= 0 ? '+' : '-') + '₹' + Math.abs(v).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function pnlCol(n) {
+  const v = parseFloat(n);
+  if (isNaN(v) || v === 0) return 'var(--dim)';
+  return v > 0 ? 'var(--green)' : 'var(--red)';
+}
+const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+
+// ── Timers ──────────────────────────────────────────────────────
+let _sigExpiry = null, _tradeEntry = null;
+
+function tickSignal() {
+  if (!_sigExpiry) { document.getElementById('sigCountdown').textContent = '—'; return; }
+  const d = _sigExpiry - Date.now();
+  if (d <= 0) { document.getElementById('sigCountdown').textContent = 'EXPIRED'; return; }
+  const m = Math.floor(d/60000), s = Math.floor((d%60000)/1000);
+  document.getElementById('sigCountdown').textContent = `${m}:${String(s).padStart(2,'0')}`;
+}
+function tickTradeTime() {
+  if (!_tradeEntry) return;
+  const d = Date.now() - _tradeEntry;
+  const h = Math.floor(d/3600000), m = Math.floor((d%3600000)/60000), s = Math.floor((d%60000)/1000);
+  document.getElementById('tdTimeIn').textContent = (h > 0 ? h+'h ' : '') + m+'m ' + s+'s';
+}
+setInterval(tickSignal, 1000);
+setInterval(tickTradeTime, 1000);
+
+function parseISTTime(t) {
+  if (!t) return null;
+  const d = new Date().toLocaleDateString('en-CA', { timeZone:'Asia/Kolkata' });
+  const r = new Date(`${d}T${t}+05:30`);
+  return isNaN(r) ? null : r;
+}
+
+// ── Stats ────────────────────────────────────────────────────────
+function computeStats(trades) {
+  const closed = trades.filter(t => t.pnl != null && t.result && t.result !== 'OPEN');
+  const wins   = closed.filter(t => parseFloat(t.pnl) > 0);
+  const losses = closed.filter(t => parseFloat(t.pnl) <= 0);
+  const wp  = wins.reduce((a,t)   => a + parseFloat(t.pnl), 0);
+  const lp  = losses.reduce((a,t) => a + parseFloat(t.pnl), 0);
+  const pnls = closed.map(t => parseFloat(t.pnl)).filter(v => !isNaN(v));
+  let peak=0, cum=0, maxDD=0;
+  for (const t of closed) { cum += parseFloat(t.pnl); if(cum>peak) peak=cum; const dd=peak-cum; if(dd>maxDD) maxDD=dd; }
+  return {
+    count: closed.length, wins: wins.length, losses: losses.length,
+    winRate: closed.length > 0 ? wins.length/closed.length*100 : null,
+    avgWin:  wins.length > 0   ? wp/wins.length   : null,
+    avgLoss: losses.length > 0 ? lp/losses.length : null,
+    pf: Math.abs(lp) > 0 ? wp/Math.abs(lp) : (wp > 0 ? Infinity : null),
+    best:  pnls.length > 0 ? Math.max(...pnls) : null,
+    worst: pnls.length > 0 ? Math.min(...pnls) : null,
+    maxDD,
+  };
+}
+
+// ── Chart refresh ─────────────────────────────────────────────────
+function refreshPnlChart(trades) {
+  const sorted = [...trades].filter(t => t.pnl != null)
+    .sort((a,b) => (a.entry_time||a.date||'').localeCompare(b.entry_time||b.date||''));
+  const labels = ['Start', ...sorted.map((_,i) => 'T'+(i+1))];
+  const data = [0]; let cum = 0;
+  for (const t of sorted) { cum += parseFloat(t.pnl); data.push(cum); }
+  const col = cum > 0 ? '#25a36b' : cum < 0 ? '#c84a4a' : '#384357';
+  if (pnlCh) {
+    pnlCh.data.labels = labels;
+    pnlCh.data.datasets[0].data = data;
+    pnlCh.data.datasets[0].borderColor = col;
+    pnlCh.data.datasets[0].pointBackgroundColor = col;
+    pnlCh.data.datasets[0].backgroundColor = cum>0 ? 'rgba(37,163,107,.05)' : 'rgba(200,74,74,.04)';
+    pnlCh.update('none');
+  }
+  const badge = document.getElementById('cumBadge');
+  badge.textContent = cum !== 0 ? fmtPnl(cum) : '₹0.00';
+  badge.className = 'tag n ' + (cum > 0 ? 'tag-green' : cum < 0 ? 'tag-red' : '');
+}
+
+function refreshWlChart(trades, hasOpen) {
+  const w = trades.filter(t => t.result === 'WIN').length;
+  const l = trades.filter(t => t.result === 'LOSS').length;
+  const o = hasOpen ? 1 : 0;
+  document.getElementById('wlWins').textContent   = w;
+  document.getElementById('wlLosses').textContent = l;
+  document.getElementById('wlOpen').textContent   = o;
+  if (!wlCh) return;
+  const total = w + l + o;
+  if (total === 0) {
+    wlCh.data.datasets[0].data = [1,0,0];
+    wlCh.data.datasets[0].backgroundColor = ['rgba(56,64,87,.5)','transparent','transparent'];
+    wlCh.data.datasets[0].borderColor = ['#232d3f','transparent','transparent'];
+  } else {
+    wlCh.data.datasets[0].data = [w, l, o];
+    wlCh.data.datasets[0].backgroundColor = ['rgba(37,163,107,.72)','rgba(200,74,74,.72)','rgba(176,116,40,.6)'];
+    wlCh.data.datasets[0].borderColor = ['#25a36b','#c84a4a','#b07428'];
+  }
+  wlCh.update('none');
+}
+
+// ── Apply status ──────────────────────────────────────────────────
+function applyStatus(s) {
+  const running = !!(s.bot_running || s.bot_active || s.bot_thread_alive);
+  const mode = (s.order_mode || 'PAPER').toUpperCase();
+
+  const mb = document.getElementById('modeBadge');
+  mb.textContent = mode;
+  mb.className = 'tag ' + (mode === 'LIVE' ? 'tag-red' : 'tag-blue');
+
+  const ms = (s.market_status || '').toLowerCase();
+  const mkt = document.getElementById('marketBadge');
+  mkt.textContent = ms.includes('open') ? 'Market Open' : (ms ? ms.charAt(0).toUpperCase()+ms.slice(1) : 'Market');
+  mkt.className = 'tag ' + (ms.includes('open') ? 'tag-green' : '');
+
+  document.getElementById('connText').textContent = running ? 'Running' : 'Stopped';
+  document.getElementById('connDot').className = running ? 'dot dot-on' : 'dot dot-off';
+  document.getElementById('connBadge').className = 'tag ' + (running ? 'tag-green' : '');
+
+  document.getElementById('botDot').className = running ? 'dot dot-on' : 'dot dot-off';
+  const bl = document.getElementById('botLabel');
+  bl.textContent = running ? 'Running' : 'Stopped';
+  bl.style.color = running ? 'var(--green)' : 'var(--dim)';
+  document.getElementById('botUptime').textContent = s.bot_uptime || '—';
+
+  const pnl = s.daily_pnl;
+  if (pnl != null) {
+    const v = parseFloat(pnl);
+    const el = document.getElementById('dailyPnl');
+    el.textContent = (v >= 0 ? '+' : '-') + '₹' + Math.abs(v).toLocaleString('en-IN', {minimumFractionDigits:2});
+    el.style.color = pnlCol(v);
+  }
+
+  const tday = parseInt(s.trades_today) || 0;
+  const tmax  = parseInt(s.max_trades_per_day || s.MAX_TRADES_PER_DAY) || null;
+  document.getElementById('tradesToday').textContent    = tday;
+  document.getElementById('tradesLimitLine').textContent = tmax ? 'of max ' + tmax : 'of max —';
+
+  if (mode === 'PAPER') document.getElementById('btnReset').style.display = '';
+
+  // ── Active trade ──
+  const at = s.active_trade;
+  const tradeData  = document.getElementById('tradeData');
+  const tradeEmpty = document.getElementById('tradeEmpty');
+  const tc         = document.getElementById('tradeCard');
+
+  if (at && (at.symbol || at.option_symbol)) {
+    tradeEmpty.style.display = 'none';
+    tradeData.style.display  = '';
+    document.getElementById('tradeDot').className = 'dot dot-on';
+
+    const sym = at.symbol || at.option_symbol || '';
+    document.getElementById('tradeSymbol').textContent = sym;
+
+    const dir = (at.direction || '').toUpperCase();
+    const db  = document.getElementById('tradeDirBadge');
+    db.textContent = dir || '—';
+    db.className = 'tag ' + (dir === 'BULLISH' ? 'tag-green' : dir === 'BEARISH' ? 'tag-red' : '');
+    tc.classList.toggle('card-accent-green', dir === 'BULLISH');
+    tc.classList.toggle('card-accent-red',   dir === 'BEARISH');
+
+    const ltp    = parseFloat(at.current_ltp || at.ltp || 0);
+    const entry  = parseFloat(at.entry_price || at.average_fill_price || 0);
+    const sl     = parseFloat(at.sl || at.stop_loss || 0);
+    const tgt    = parseFloat(at.target || 0);
+    const qty    = parseInt(at.filled_quantity || at.quantity || 0);
+
+    document.getElementById('pbSL').textContent  = f2(sl);
+    document.getElementById('pbLTP').textContent = f2(ltp);
+    document.getElementById('pbTGT').textContent = f2(tgt);
+
+    const range = tgt - sl;
+    const pct   = range > 0 ? clamp(((ltp-sl)/range)*100, 4, 96) : 50;
+    document.getElementById('pbFill').style.width      = pct + '%';
+    document.getElementById('pbFill').style.background = ltp >= entry ? 'var(--green)' : 'var(--red)';
+
+    const risk = entry - sl, reward = tgt - entry;
+    document.getElementById('pbRR').textContent = risk > 0 ? '1 : ' + (reward/risk).toFixed(1) : '—';
+
+    const unr = (ltp - entry) * qty;
+    document.getElementById('tdUnrPnl').textContent = fmtPnl(unr);
+    document.getElementById('tdUnrPnl').style.color  = pnlCol(unr);
+    document.getElementById('tdEntry').textContent   = f2(entry);
+    document.getElementById('tdQty').textContent     = qty || '—';
+    document.getElementById('tdFill').textContent    = f2(at.average_fill_price || at.entry_price);
+    document.getElementById('tdSlOrder').textContent = at.sl_order_id || s.sl_order_id || '—';
+
+    document.getElementById('posName').textContent   = sym;
+    document.getElementById('posName').style.color   = 'var(--text)';
+    document.getElementById('posUnrPnl').textContent = fmtPnl(unr);
+    document.getElementById('posUnrPnl').style.color = pnlCol(unr);
+
+    _tradeEntry = parseISTTime(at.entry_time);
+  } else {
+    tradeData.style.display  = 'none';
+    tradeEmpty.style.display = '';
+    document.getElementById('tradeDot').className = 'dot dot-off';
+    document.getElementById('tradeDirBadge').textContent = '—';
+    document.getElementById('tradeDirBadge').className   = 'tag';
+    tc.classList.remove('card-accent-green', 'card-accent-red');
+    document.getElementById('posName').textContent   = 'None';
+    document.getElementById('posName').style.color   = 'var(--dim)';
+    document.getElementById('posUnrPnl').textContent = '—';
+    document.getElementById('posUnrPnl').style.color = 'var(--dim)';
+    _tradeEntry = null;
+    const dir = (s.direction || '').toUpperCase();
+    document.getElementById('tradeEmptySub').textContent = dir ? dir + ' setup' : '';
+  }
+
+  // ── Signal ──
+  const sig = s.signal;
+  if (sig && (sig.option_symbol || sig.entry)) {
+    document.getElementById('sigEmpty').style.display = 'none';
+    document.getElementById('sigData').style.display  = '';
+
+    document.getElementById('sigSymbol').textContent = sig.option_symbol || sig.symbol || '';
+    document.getElementById('sigEntry').textContent  = f2(sig.entry);
+    document.getElementById('sigSL').textContent     = f2(sig.sl);
+    document.getElementById('sigTgt').textContent    = f2(sig.target);
+    document.getElementById('sigClose').textContent  = f2(sig.crossover_close);
+
+    const w = sig.waiting_for_confirmation;
+    const ce = document.getElementById('sigConf');
+    ce.textContent = w ? 'Waiting for confirmation' : 'Confirmed';
+    ce.style.color = w ? 'var(--amber)' : 'var(--green)';
+
+    const sb = document.getElementById('sigStatusBadge');
+    sb.textContent = w ? 'Awaiting Confirm' : 'Active';
+    sb.className   = 'tag ' + (w ? 'tag-amber' : 'tag-green');
+
+    _sigExpiry = parseISTTime(sig.signal_expiry_time);
+    document.getElementById('sigExpiresAt').textContent = sig.signal_expiry_time ? 'expires at ' + sig.signal_expiry_time : '';
+  } else {
+    document.getElementById('sigData').style.display  = 'none';
+    document.getElementById('sigEmpty').style.display = '';
+    document.getElementById('sigStatusBadge').textContent = 'Scanning';
+    document.getElementById('sigStatusBadge').className   = 'tag';
+    _sigExpiry = null;
+
+    const dir = (s.direction || '').toUpperCase();
+    const sd  = document.getElementById('setupDir');
+    sd.textContent  = dir || '—';
+    sd.style.color  = dir === 'BULLISH' ? 'var(--green)' : dir === 'BEARISH' ? 'var(--red)' : 'var(--dim)';
+    document.getElementById('setupStatus').textContent = s.setup_status || '—';
+    document.getElementById('setupATM').textContent    = s.atm_strike   || '—';
+    document.getElementById('setupOption').textContent = s.selected_option || '—';
+  }
+
+  // ── Risk bars ──
+  const dpnl      = parseFloat(s.daily_pnl) || 0;
+  const maxLoss   = Math.abs(parseFloat(s.max_daily_loss   || s.MAX_DAILY_LOSS   || -5000));
+  const maxProfit = Math.abs(parseFloat(s.max_daily_profit || s.MAX_DAILY_PROFIT || 15000));
+  const maxTrades = parseInt(s.max_trades_per_day || s.MAX_TRADES_PER_DAY || 3);
+
+  const lossPct   = dpnl < 0 ? clamp(Math.abs(dpnl)/maxLoss*100,   0, 100) : 0;
+  const profitPct = dpnl > 0 ? clamp(dpnl/maxProfit*100,            0, 100) : 0;
+  const tradePct  = clamp((parseInt(s.trades_today)||0)/maxTrades*100, 0, 100);
+
+  document.getElementById('riskPnlBar').style.width    = profitPct + '%';
+  document.getElementById('riskPnlVal').textContent    = fmtPnl(dpnl);
+  document.getElementById('riskPnlVal').style.color    = pnlCol(dpnl);
+  document.getElementById('riskLossBar').style.width   = lossPct + '%';
+  document.getElementById('riskLossVal').textContent   = lossPct.toFixed(0) + '% of ₹' + maxLoss.toLocaleString('en-IN');
+  document.getElementById('riskLossVal').style.color   = lossPct > 70 ? 'var(--red)' : 'var(--t2)';
+  document.getElementById('riskTradesBar').style.width = tradePct + '%';
+  document.getElementById('riskTradesVal').textContent = `${s.trades_today||0} / ${maxTrades}`;
+
+  // ── System health ──
+  document.getElementById('sysTotal').textContent     = s.total_api_calls  ?? '—';
+  document.getElementById('sysFailed').textContent    = s.failed_api_calls ?? '—';
+  document.getElementById('sysRateLimit').textContent = s.rate_limit_hits  ?? '—';
+  document.getElementById('sysCacheSave').textContent = s.candle_api_saved_pct != null ? s.candle_api_saved_pct + '%' : '—';
+  document.getElementById('sysCandle').textContent    = s.candle_calls     ?? '—';
+  document.getElementById('sysLTP').textContent       = s.ltp_calls        ?? '—';
+  document.getElementById('sysOrder').textContent     = s.order_calls      ?? '—';
+  document.getElementById('sysPos').textContent       = s.position_calls   ?? '—';
+
+  const wsOn = s.websocket_connected;
+  document.getElementById('wsDot').className      = wsOn ? 'dot dot-on' : 'dot dot-off';
+  document.getElementById('wsStatus').textContent = s.websocket_status || (wsOn ? 'Connected' : 'Disconnected');
+  document.getElementById('wsTicks').textContent  = s.websocket_ticks != null ? s.websocket_ticks + ' ticks' : '';
+
+  // ── Activity log ──
+  const logs = s.recent_logs || [];
+  if (logs.length > 0) {
+    document.getElementById('actLog').innerHTML = [...logs].reverse().slice(0,35).map(msg => {
+      const safe = String(msg).replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      let col = 'var(--t2)';
+      if      (/error|fail|reject/i.test(msg))    col = 'var(--red)';
+      else if (/target hit|profit/i.test(msg))     col = 'var(--green)';
+      else if (/sl hit|stop loss/i.test(msg))      col = 'var(--red)';
+      else if (/signal|crossover/i.test(msg))      col = 'var(--amber)';
+      else if (/buy|sell|order|entry/i.test(msg))  col = 'var(--blue)';
+      return `<div class="log-line" style="color:${col};">${safe}</div>`;
+    }).join('');
+  }
+
+  document.getElementById('lastFetch').textContent = new Date().toLocaleTimeString('en-IN', {timeZone:'Asia/Kolkata'});
+}
+
+// ── Apply trades ───────────────────────────────────────────────────
+function applyTrades(trades, activeTrade) {
+  const stats = computeStats(trades);
+
+  const wr = document.getElementById('winRate');
+  if (stats.winRate !== null) {
+    wr.textContent = stats.winRate.toFixed(1) + '%';
+    wr.style.color = stats.winRate >= 50 ? 'var(--green)' : 'var(--red)';
+    document.getElementById('winFrac').textContent = stats.wins + ' W / ' + stats.losses + ' L of ' + stats.count;
+  } else {
+    wr.textContent = '—'; wr.style.color = 'var(--dim)';
+    document.getElementById('winFrac').textContent = 'no closed trades yet';
+  }
+
+  document.getElementById('avgWin').textContent   = stats.avgWin  != null ? fmtPnl(stats.avgWin)  : '—';
+  document.getElementById('avgLoss').textContent  = stats.avgLoss != null ? fmtPnl(stats.avgLoss) : '—';
+
+  const pf = document.getElementById('profitFactor');
+  if (stats.pf === Infinity) { pf.textContent = '∞'; pf.style.color = 'var(--green)'; }
+  else if (stats.pf != null) { pf.textContent = stats.pf.toFixed(2); pf.style.color = stats.pf >= 1 ? 'var(--green)' : 'var(--red)'; }
+  else { pf.textContent = '—'; pf.style.color = 'var(--dim)'; }
+
+  document.getElementById('bestTrade').textContent  = stats.best  != null ? fmtPnl(stats.best)  : '—';
+  document.getElementById('worstTrade').textContent = stats.worst != null ? fmtPnl(stats.worst) : '—';
+  document.getElementById('maxDrawdown').textContent = stats.maxDD > 0
+    ? '-₹' + stats.maxDD.toLocaleString('en-IN', {minimumFractionDigits:2}) : '—';
+
+  refreshPnlChart(trades);
+  refreshWlChart(trades, !!activeTrade);
+
+  document.getElementById('tradeCntBadge').textContent = trades.length + (trades.length === 1 ? ' trade' : ' trades');
+
+  const tbody = document.getElementById('tradeTbody');
+  if (trades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:var(--dim);padding:28px 10px;">No trades recorded</td></tr>';
+    return;
+  }
+  tbody.innerHTML = [...trades].reverse().map(t => {
+    const pv  = parseFloat(t.pnl);
+    const ps  = !isNaN(pv) ? `<span style="font-weight:600;color:${pnlCol(pv)};">${fmtPnl(pv)}</span>` : '—';
+    const res = t.result === 'WIN'
+      ? `<span class="tag tag-green" style="font-size:9px;">WIN</span>`
+      : t.result === 'LOSS'
+      ? `<span class="tag tag-red" style="font-size:9px;">LOSS</span>`
+      : `<span class="tag tag-amber" style="font-size:9px;">OPEN</span>`;
+    const side = (t.direction||'').toUpperCase() === 'BULLISH'
+      ? `<span style="color:var(--green);font-size:11px;">Long</span>`
+      : `<span style="color:var(--red);font-size:11px;">Short</span>`;
+    const sym  = t.symbol || '—';
+    const symS = sym.length > 22 ? sym.slice(0,21)+'…' : sym;
+    return `<tr>
+      <td style="color:var(--t2);">${t.entry_time || t.date || '—'}</td>
+      <td title="${sym}" class="truncate" style="max-width:120px;">${symS}</td>
+      <td>${side}</td>
+      <td>${f2(t.entry_price)}</td>
+      <td>${f2(t.average_fill_price || t.entry_price)}</td>
+      <td>${f2(t.exit_price)}</td>
+      <td class="num-right">${t.filled_quantity || '—'}</td>
+      <td class="num-right">${ps}</td>
+      <td style="color:var(--dim);font-size:11px;">${(t.reason||'—').replace(/_/g,' ')}</td>
+      <td>${res}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Fetch ───────────────────────────────────────────────────────
+async function fetchAll() {
+  try {
+    const [sr, tr] = await Promise.all([fetch('/api/status'), fetch('/api/trades')]);
+    const s = await sr.json(), td = await tr.json();
+    applyStatus(s);
+    applyTrades(td.trades || [], s.active_trade);
+  } catch {
+    document.getElementById('connText').textContent  = 'Error';
+    document.getElementById('connDot').className    = 'dot';
+    document.getElementById('connBadge').className  = 'tag tag-red';
+  }
+}
+
+// ── Controls ─────────────────────────────────────────────────────
+async function doPost(url, msg) {
+  const el = document.getElementById('ctrlMsg');
+  el.textContent = msg;
+  try { const r = await fetch(url,{method:'POST'}); const d = await r.json(); el.textContent = d.message||'Done'; }
+  catch { el.textContent = 'Request failed'; }
+  setTimeout(() => { el.textContent = ''; }, 4000);
+  setTimeout(fetchAll, 700);
+}
+function doStart()     { doPost('/api/start','Starting…'); }
+function doStop()      { doPost('/api/stop','Stopping…'); }
+function doReset()     { if(confirm('Reset paper session? This clears all trade history.')) doPost('/api/reset','Resetting…'); }
+function doEmergency() { if(confirm('Emergency Exit: closes active trade and stops the bot.')) doPost('/api/emergency_exit','Executing…'); }
+
+// ── Config ───────────────────────────────────────────────────────
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const c = await r.json();
+    const set = (id, val) => { const el = document.getElementById(id); if (el && val != null) { el.value = val; el.placeholder = val; } };
+    set('cfgLots',      c.lots);
+    set('cfgATM',       c.atm_offset);
+    set('cfgCE',        c.ce_itm_offset);
+    set('cfgPE',        c.pe_itm_offset);
+    set('cfgFixedTarget', c.fixed_target);
+    set('cfgRR',          c.rr_ratio);
+    set('cfgMaxTrades', c.max_trades_day);
+    set('cfgSigExpiry', c.signal_expiry_candles);
+    set('cfgMaxLoss',   c.max_daily_loss);
+    set('cfgMaxProfit', c.max_daily_profit);
+    set('cfgStart',     c.market_start);
+    set('cfgEnd',       c.market_end);
+    set('cfgInterval',  c.check_interval);
+  } catch { /* silent */ }
+}
+
+async function saveConfig() {
+  const get = id => { const el = document.getElementById(id); return el ? el.value : null; };
+  const payload = {
+    lots:                  parseFloat(get('cfgLots')),
+    atm_offset:            parseFloat(get('cfgATM')),
+    ce_itm_offset:         parseFloat(get('cfgCE')),
+    pe_itm_offset:         parseFloat(get('cfgPE')),
+    fixed_target:          parseFloat(get('cfgFixedTarget')),
+    rr_ratio:              parseFloat(get('cfgRR')),
+    max_trades_day:        parseFloat(get('cfgMaxTrades')),
+    signal_expiry_candles: parseFloat(get('cfgSigExpiry')),
+    max_daily_loss:        parseFloat(get('cfgMaxLoss')),
+    max_daily_profit:      parseFloat(get('cfgMaxProfit')),
+    market_start:          get('cfgStart'),
+    market_end:            get('cfgEnd'),
+    check_interval:        parseFloat(get('cfgInterval')),
+  };
+
+  // Strip NaN values (empty fields)
+  Object.keys(payload).forEach(k => { if (typeof payload[k] === 'number' && isNaN(payload[k])) delete payload[k]; });
+
+  const msgEl = document.getElementById('cfgMsg');
+  msgEl.style.color = 'var(--t2)';
+  msgEl.textContent = 'Saving…';
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    msgEl.textContent = d.message || (d.ok ? 'Saved.' : 'Error');
+    msgEl.style.color = d.ok ? 'var(--green)' : 'var(--red)';
+  } catch {
+    msgEl.textContent = 'Request failed';
+    msgEl.style.color = 'var(--red)';
+  }
+  setTimeout(() => { msgEl.textContent = ''; }, 5000);
+}
+
+// ── Init ─────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initPnlChart();
+  initWlChart();
+  loadConfig();
+  fetchAll();
+  setInterval(fetchAll, 5000);
+});
+</script>
+</body>
+</html>

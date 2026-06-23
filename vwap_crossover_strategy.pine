@@ -1,0 +1,178 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// NIFTY VWAP Crossover Strategy  (mirrors vwap_strategy_bot.py)
+// Timeframe : 5-minute
+// Chart     : NSE:NIFTY1!  (continuous NIFTY Futures) or NSE:NIFTYSPOT
+// Timezone  : Set chart timezone to "Asia/Kolkata" in TradingView settings
+//
+// Strategy logic (exact match to the live bot):
+//   1. Direction  : futures close > session VWAP → BULLISH  (buy CE proxy = Long)
+//                   futures close < session VWAP → BEARISH  (buy PE proxy = Short)
+//   2. Signal     : Strict VWAP crossover on the last two COMPLETED candles
+//                     Bullish → prev_close < prev_vwap AND curr_close > curr_vwap
+//                     Bearish → prev_close > prev_vwap AND curr_close < curr_vwap
+//   3. Entry      : NEXT candle breaks above (LONG) / below (SHORT) the
+//                   crossover candle's high / low  (confirmation breakout)
+//   4. Stop Loss  : Crossover candle's low (LONG) / high (SHORT)
+//   5. Target     : Entry ± Risk × RR  (default 1:2)
+//   6. Expiry     : Cancel signal if not triggered within N candles
+//   7. EOD close  : Force-close any open trade at 15:15 IST
+//
+// NOTE: The live bot trades the crossover on the OPTION's own candle chart.
+//       This script uses the futures chart as the best TradingView approximation.
+//       Win-rate / signal frequency will be accurate; P&L in option premium
+//       will differ (options don't move point-for-point with futures).
+// ─────────────────────────────────────────────────────────────────────────────
+
+//@version=5
+strategy(
+     title            = "NIFTY VWAP Crossover (Bot Strategy)",
+     overlay           = true,
+     initial_capital   = 100000,
+     currency          = currency.INR,
+     default_qty_type  = strategy.fixed,
+     default_qty_value = 1,
+     commission_type   = strategy.commission.cash_per_order,
+     commission_value  = 200,
+     slippage          = 2,
+     calc_on_order_fills = false
+ )
+
+// ─── Inputs ──────────────────────────────────────────────────────────────────
+grp_strat = "Strategy"
+sig_expiry  = input.int  (2,    "Signal Expiry (candles)",  minval=1, maxval=10, group=grp_strat)
+rr_ratio    = input.float(2.0,  "Risk : Reward",            minval=0.5, maxval=5.0, step=0.5, group=grp_strat)
+long_en     = input.bool (true,  "Trade LONG signals  (CE proxy)",  group=grp_strat)
+short_en    = input.bool (true,  "Trade SHORT signals (PE proxy)",  group=grp_strat)
+min_risk    = input.float(5.0,  "Min signal risk (pts) — filters noise", minval=0.0, step=1.0, group=grp_strat)
+
+grp_time = "Market Hours (IST — set chart TZ to Asia/Kolkata)"
+mkt_start_h = input.int(9,  "Start hour",   minval=0, maxval=23, group=grp_time)
+mkt_start_m = input.int(15, "Start minute", minval=0, maxval=59, group=grp_time)
+mkt_end_h   = input.int(15, "End hour",     minval=0, maxval=23, group=grp_time)
+mkt_end_m   = input.int(15, "End minute",   minval=0, maxval=59, group=grp_time)
+
+// ─── Session VWAP (resets each day — same as bot's calculate_vwap) ────────────
+vwap_val = ta.vwap(hlc3)
+
+// ─── Market hours ─────────────────────────────────────────────────────────────
+bar_mins  = hour * 60 + minute
+in_market = bar_mins >= mkt_start_h * 60 + mkt_start_m and
+            bar_mins <= mkt_end_h   * 60 + mkt_end_m
+
+// ─── Crossover detection ──────────────────────────────────────────────────────
+// Mirrors detect_vwap_crossover():
+//   prev_close < prev_vwap  AND  curr_close > curr_vwap  → BULLISH
+//   prev_close > prev_vwap  AND  curr_close < curr_vwap  → BEARISH
+//
+// In Pine Script, bar[1] is the "previous completed candle" and
+// bar[0] is the "current completed candle" on a closed bar.
+bull_cross = close[1] < vwap_val[1] and close > vwap_val and in_market
+bear_cross = close[1] > vwap_val[1] and close < vwap_val and in_market
+
+// ─── Signal state (persistent across bars) ────────────────────────────────────
+var int    sig_bar    = na   // bar_index when signal was set
+var float  sig_entry  = na   // breakout trigger level
+var float  sig_sl     = na   // stop loss
+var float  sig_target = na   // target
+var bool   sig_long   = na   // true = LONG, false = SHORT
+
+// ─── Helper: is the current signal still within its expiry window? ────────────
+sig_alive = not na(sig_bar) and (bar_index - sig_bar) <= sig_expiry
+
+// ─── Clear expired signals ────────────────────────────────────────────────────
+in_trade  = strategy.position_size != 0
+
+if sig_alive == false and not in_trade
+    strategy.cancel("L_entry")
+    strategy.cancel("S_entry")
+    sig_bar    := na
+    sig_entry  := na
+    sig_sl     := na
+    sig_target := na
+    sig_long   := na
+
+// ─── Detect new signal (only when flat and no active signal) ──────────────────
+if not in_trade and not sig_alive and in_market
+
+    if bull_cross and long_en
+        _entry  = high          // crossover candle HIGH = breakout trigger
+        _sl     = low           // crossover candle LOW  = stop loss
+        _risk   = _entry - _sl
+        if _risk >= min_risk
+            sig_bar    := bar_index
+            sig_entry  := _entry
+            sig_sl     := _sl
+            sig_target := _entry + _risk * rr_ratio
+            sig_long   := true
+            // Stop-buy order: fills when next candle's HIGH reaches sig_entry
+            strategy.entry("L_entry", strategy.long,  stop=sig_entry)
+            strategy.exit ("L_exit",  "L_entry", stop=sig_sl, limit=sig_target,
+                           comment="SL/TGT")
+
+    else if bear_cross and short_en
+        _entry  = low           // crossover candle LOW  = breakdown trigger
+        _sl     = high          // crossover candle HIGH = stop loss
+        _risk   = _sl - _entry
+        if _risk >= min_risk
+            sig_bar    := bar_index
+            sig_entry  := _entry
+            sig_sl     := _sl
+            sig_target := _entry - _risk * rr_ratio
+            sig_long   := false
+            // Stop-sell order: fills when next candle's LOW reaches sig_entry
+            strategy.entry("S_entry", strategy.short, stop=sig_entry)
+            strategy.exit ("S_exit",  "S_entry", stop=sig_sl, limit=sig_target,
+                           comment="SL/TGT")
+
+// ─── End-of-day force close (15:15 IST) ──────────────────────────────────────
+eod = bar_mins >= 15 * 60 + 15
+if eod
+    strategy.close_all("EOD")
+    strategy.cancel_all()
+    sig_bar   := na
+    sig_entry := na
+    sig_sl    := na
+    sig_long  := na
+
+// ─── Visuals ──────────────────────────────────────────────────────────────────
+
+// VWAP line — green when close above, red when close below
+vwap_color = close > vwap_val ? color.new(color.teal, 0) : color.new(color.orange, 0)
+plot(vwap_val, "VWAP", color=vwap_color, linewidth=2)
+
+// Crossover signals
+plotshape(bull_cross, "Bull Cross", shape.triangleup,
+          location.belowbar, color.new(color.green, 0), size=size.small,
+          text="X↑", textcolor=color.green)
+plotshape(bear_cross, "Bear Cross", shape.triangledown,
+          location.abovebar, color.new(color.red, 0), size=size.small,
+          text="X↓", textcolor=color.red)
+
+// Pending signal levels (shown only while signal is alive and not yet in trade)
+show_levels = sig_alive and not in_trade
+plot(show_levels ? sig_entry  : na, "Signal Entry",  color.new(color.orange, 20), linewidth=1, style=plot.style_linebr)
+plot(show_levels ? sig_sl     : na, "Signal SL",     color.new(color.red,    20), linewidth=1, style=plot.style_linebr)
+plot(show_levels ? sig_target : na, "Signal Target", color.new(color.green,  20), linewidth=1, style=plot.style_linebr)
+
+// Market hours background tint
+bgcolor(in_market ? color.new(color.blue, 96) : na, title="Market Hours")
+
+// ─── Information table ────────────────────────────────────────────────────────
+var table info = table.new(position.top_right, 2, 6,
+     border_color=color.gray, border_width=1,
+     frame_color=color.gray, frame_width=1)
+
+if barstate.islast
+    table.cell(info, 0, 0, "Setting",  text_color=color.gray,  bgcolor=color.new(color.gray, 90))
+    table.cell(info, 1, 0, "Value",    text_color=color.gray,  bgcolor=color.new(color.gray, 90))
+    table.cell(info, 0, 1, "R:R",      text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 1, 1, "1:" + str.tostring(rr_ratio), text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 0, 2, "Sig expiry", text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 1, 2, str.tostring(sig_expiry) + " candles", text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 0, 3, "Direction", text_color=color.white, bgcolor=color.new(color.navy, 70))
+    _dir = long_en and short_en ? "Both" : long_en ? "Long only" : "Short only"
+    table.cell(info, 1, 3, _dir, text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 0, 4, "Min risk", text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 1, 4, str.tostring(min_risk) + " pts", text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 0, 5, "Trades",   text_color=color.white, bgcolor=color.new(color.navy, 70))
+    table.cell(info, 1, 5, str.tostring(strategy.closedtrades), text_color=color.white, bgcolor=color.new(color.navy, 70))

@@ -1,10 +1,11 @@
 import csv
 import io
 import json
+import re
 import threading
 from pathlib import Path
 
-from flask import Flask, jsonify, send_file, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 
 import vwap_strategy_bot as bot
@@ -90,6 +91,11 @@ def _reset_paper_session():
 @app.route("/")
 def index():
     return send_from_directory(str(BASE_DIR), "dashboard.html")
+
+
+@app.route("/pro")
+def pro_dashboard():
+    return send_from_directory(str(BASE_DIR), "dashboard_pro.html")
 
 
 @app.route("/api/status", methods=["GET"])
@@ -201,6 +207,93 @@ def api_export_signal_audit():
     writer.writeheader()
     csv_bytes = io.BytesIO(output.getvalue().encode("utf-8"))
     return send_file(csv_bytes, mimetype="text/csv", as_attachment=True, download_name=audit_path.name)
+
+
+# ── Editable strategy config ──────────────────────────────────────────────────
+# Maps JSON key → (env file key, Python type, bot module attribute name)
+_EDITABLE = {
+    "lots":                  ("LOTS",                  int,   "LOTS"),
+    "atm_offset":            ("ATM_OFFSET",            int,   "ATM_OFFSET"),
+    "ce_itm_offset":         ("CE_ITM_OFFSET",         int,   "CE_ITM_OFFSET"),
+    "pe_itm_offset":         ("PE_ITM_OFFSET",         int,   "PE_ITM_OFFSET"),
+    "rr_ratio":              ("RR_RATIO",              float, "RR_RATIO"),
+    "fixed_target":          ("FIXED_TARGET",          float, "FIXED_TARGET"),
+    "max_trades_day":        ("MAX_TRADES_DAY",        int,   "MAX_TRADES_DAY"),
+    "signal_expiry_candles": ("SIGNAL_EXPIRY_CANDLES", int,   "SIGNAL_EXPIRY_CANDLES"),
+    "max_daily_loss":        ("MAX_DAILY_LOSS",        float, "MAX_DAILY_LOSS"),
+    "max_daily_profit":      ("MAX_DAILY_PROFIT",      float, "MAX_DAILY_PROFIT"),
+    "market_start":          ("MARKET_START",          str,   "MARKET_START"),
+    "market_end":            ("MARKET_END",            str,   "MARKET_END"),
+    "check_interval":        ("CHECK_INTERVAL",        int,   "CHECK_INTERVAL"),
+}
+
+# Settings that require a bot restart to take effect
+_RESTART_REQUIRED = {"market_start", "market_end", "check_interval"}
+
+
+def _write_env_key(key: str, value) -> None:
+    """Update or append a single key=value line in .env."""
+    env_path = BASE_DIR / ".env"
+    content = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
+    lines = content.splitlines()
+    pattern = re.compile(rf"^{re.escape(key)}\s*=")
+    new_lines, found = [], False
+    for line in lines:
+        if pattern.match(line.strip()):
+            new_lines.append(f"{key}={value}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}")
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+
+@app.route("/api/config", methods=["GET"])
+def api_get_config():
+    return jsonify({
+        "lots":                  getattr(bot, "LOTS",                  1),
+        "atm_offset":            getattr(bot, "ATM_OFFSET",            100),
+        "ce_itm_offset":         getattr(bot, "CE_ITM_OFFSET",         100),
+        "pe_itm_offset":         getattr(bot, "PE_ITM_OFFSET",         100),
+        "rr_ratio":              getattr(bot, "RR_RATIO",              2.0),
+        "fixed_target":          getattr(bot, "FIXED_TARGET",          0.0),
+        "max_trades_day":        getattr(bot, "MAX_TRADES_DAY",        3),
+        "signal_expiry_candles": getattr(bot, "SIGNAL_EXPIRY_CANDLES", 2),
+        "max_daily_loss":        getattr(bot, "MAX_DAILY_LOSS",        5000.0),
+        "max_daily_profit":      getattr(bot, "MAX_DAILY_PROFIT",      15000.0),
+        "market_start":          getattr(bot, "MARKET_START",          "10:30"),
+        "market_end":            getattr(bot, "MARKET_END",            "15:00"),
+        "check_interval":        getattr(bot, "CHECK_INTERVAL",        60),
+        "paper_trade":           getattr(bot, "PAPER_TRADE",           True),
+    })
+
+
+@app.route("/api/config", methods=["POST"])
+def api_update_config():
+    data = request.get_json(silent=True) or {}
+    updated, errors, needs_restart = {}, [], []
+
+    for field, (env_key, cast, attr) in _EDITABLE.items():
+        if field not in data:
+            continue
+        try:
+            val = cast(data[field])
+            setattr(bot, attr, val)      # update live in running process
+            _write_env_key(env_key, val) # persist to .env
+            updated[field] = val
+            if field in _RESTART_REQUIRED:
+                needs_restart.append(field)
+        except (ValueError, TypeError) as exc:
+            errors.append(f"{field}: {exc}")
+
+    if errors:
+        return jsonify({"ok": False, "errors": errors}), 400
+
+    msg = f"Saved {len(updated)} setting(s)."
+    if needs_restart:
+        msg += f" Note: {', '.join(needs_restart)} require a bot restart."
+    return jsonify({"ok": True, "updated": updated, "message": msg})
 
 
 if __name__ == "__main__":

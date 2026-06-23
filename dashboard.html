@@ -407,6 +407,62 @@
           <div id="rateLimitHits" class="value">0</div>
         </div>
         <div class="card stat">
+          <div class="label">WS Ticks</div>
+          <div id="wsTicks" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Candle Calls</div>
+          <div id="candleCalls" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">LTP Calls</div>
+          <div id="ltpCalls" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Order Calls</div>
+          <div id="orderCalls" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Position Calls</div>
+          <div id="positionCalls" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Candle RL Hits</div>
+          <div id="candleRateLimits" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">LTP RL Hits</div>
+          <div id="ltpRateLimits" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Order RL Hits</div>
+          <div id="orderRateLimits" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Position RL Hits</div>
+          <div id="positionRateLimits" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Candle Cache Hits</div>
+          <div id="candleCacheHits" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">New Candles</div>
+          <div id="newCandlesProcessed" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Candle API Saved</div>
+          <div id="candleApiSavedPct" class="value">0%</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Trailing SL</div>
+          <div id="trailingSLStatus" class="value">OFF</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Trail SL Moves</div>
+          <div id="trailingSLMoves" class="value">0</div>
+        </div>
+        <div class="card stat">
           <div class="label">Last LTP Update</div>
           <div id="lastLtpUpdate" class="value">--</div>
         </div>
@@ -421,6 +477,18 @@
         <div class="card stat">
           <div class="label">WebSocket Status</div>
           <div id="websocketStatus" class="value">DISCONNECTED</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Feed Health</div>
+          <div id="feedHealth" class="value">REST</div>
+        </div>
+        <div class="card stat">
+          <div class="label">WS Reconnects</div>
+          <div id="wsReconnects" class="value">0</div>
+        </div>
+        <div class="card stat">
+          <div class="label">Last WS Data</div>
+          <div id="lastWsData" class="value">--</div>
         </div>
         <div class="card stat">
           <div class="label">Order Mode</div>
@@ -646,10 +714,40 @@
       $('totalApiCalls').textContent = fmtValue(data.total_api_calls || 0);
       $('failedCalls').textContent = fmtValue(data.failed_api_calls || 0);
       $('rateLimitHits').textContent = fmtValue(data.rate_limit_hits || 0);
+      $('wsTicks').textContent = fmtValue(data.websocket_ticks || 0);
+      $('candleCalls').textContent = fmtValue(data.candle_calls || 0);
+      $('ltpCalls').textContent = fmtValue(data.ltp_calls || 0);
+      $('orderCalls').textContent = fmtValue(data.order_calls || 0);
+      $('positionCalls').textContent = fmtValue(data.position_calls || 0);
+      $('candleRateLimits').textContent = fmtValue(data.candle_rate_limits || 0);
+      $('ltpRateLimits').textContent = fmtValue(data.ltp_rate_limits || 0);
+      $('orderRateLimits').textContent = fmtValue(data.order_rate_limits || 0);
+      $('positionRateLimits').textContent = fmtValue(data.position_rate_limits || 0);
+      $('candleCacheHits').textContent = fmtValue(data.candle_cache_hits || 0);
+      $('newCandlesProcessed').textContent = fmtValue(data.new_candles_processed || 0);
+      $('candleApiSavedPct').textContent = (data.candle_api_saved_pct || 0) + '%';
+      $('trailingSLStatus').textContent = data.trailing_sl_enabled ? 'ON' : 'OFF';
+      $('trailingSLMoves').textContent = fmtValue(data.trailing_sl_moves || 0);
       $('lastLtpUpdate').textContent = fmtValue(data.last_ltp_update);
       $('dataSource').textContent = data.data_source || 'LIVE';
       $('dataFeed').textContent = data.data_feed || 'REST';
       $('websocketStatus').textContent = data.websocket_status || 'DISCONNECTED';
+
+      // Feed health
+      const feedHealth = data.feed_health || 'REST';
+      $('feedHealth').textContent = feedHealth + (data.ws_stale_warning ? ' ⚠' : '');
+      $('feedHealth').className = 'value ' + (
+        feedHealth === 'WEBSOCKET_HEALTHY' ? 'positive' :
+        feedHealth === 'WEBSOCKET_STALE' ? 'negative' : ''
+      );
+      $('wsReconnects').textContent = String(data.ws_reconnect_attempts || 0);
+      if (data.ws_last_data_time) {
+        const wsDate = new Date(Number(data.ws_last_data_time) * 1000);
+        $('lastWsData').textContent = wsDate.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' });
+      } else {
+        $('lastWsData').textContent = '--';
+      }
+
       $('orderMode').textContent = data.order_mode || 'PAPER';
       $('marketStatus').textContent = data.market_status || 'CLOSED';
       $('historicalAnchor').textContent = data.historical_anchor || '--';

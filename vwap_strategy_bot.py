@@ -96,10 +96,18 @@ MARKET_END      = os.getenv("MARKET_END", "15:00")
 CHECK_INTERVAL  = int(os.getenv("CHECK_INTERVAL", "60"))  # Seconds between each cycle
 LTP_CHECK_INTERVAL = int(os.getenv("LTP_CHECK_INTERVAL", "1"))  # Seconds between LTP checks
 USE_WEBSOCKET = os.getenv("USE_WEBSOCKET", "False").lower() == "true"
+STALE_LTP_THRESHOLD_SEC = int(os.getenv("STALE_LTP_THRESHOLD_SEC", "30"))
 
 # Risk controls
 MAX_DAILY_LOSS   = float(os.getenv("MAX_DAILY_LOSS", "5000"))    # ₹ — bot stops if hit
 MAX_DAILY_PROFIT = float(os.getenv("MAX_DAILY_PROFIT", "15000")) # ₹ — bot stops if hit
+RR_RATIO         = float(os.getenv("RR_RATIO", "2.0"))          # Risk:Reward multiplier for target
+FIXED_TARGET     = float(os.getenv("FIXED_TARGET", "0"))        # Fixed ₹ target from entry; 0 = use RR_RATIO
+
+# Trailing stop loss
+TRAILING_SL      = os.getenv("TRAILING_SL", "False").lower() == "true"
+BREAKEVEN_AT     = float(os.getenv("BREAKEVEN_AT", "0.5"))      # Move SL to entry when this fraction of target is reached (0.5 = 50%)
+TRAIL_POINTS     = float(os.getenv("TRAIL_POINTS", "0"))        # After breakeven, trail SL this many pts below highest LTP (0 = breakeven only)
 
 # Paper trading mode: no real orders are placed
 PAPER_TRADE = os.getenv("PAPER_TRADE", "True").lower() == "true"
@@ -210,6 +218,15 @@ state = {
     "total_api_calls": 0,
     "failed_api_calls": 0,
     "rate_limit_hits": 0,
+    "candle_calls": 0,
+    "ltp_calls": 0,
+    "order_calls": 0,
+    "position_calls": 0,
+    "websocket_ticks": 0,
+    "candle_rate_limits": 0,
+    "ltp_rate_limits": 0,
+    "order_rate_limits": 0,
+    "position_rate_limits": 0,
     "entry_in_progress": False,
     "paper_order_seq": 0,
     "bot_start_time": None,
@@ -218,11 +235,18 @@ state = {
     "websocket_status": "DISCONNECTED",
     "data_feed": "REST",
     "live_ltp": {},
+    "ws_reconnect_attempts": 0,
+    "ws_last_data_time": None,
+    "ws_stale_warning": False,
+    "feed_health": "REST",
     "selected_option_token": None,
     "filled_quantity": None,
     "remaining_quantity": None,
     "average_fill_price": None,
     "candle_cache": {},
+    "candle_cache_hits": 0,
+    "new_candles_processed": 0,
+    "trailing_sl_moves": 0,
 
     # Symbol data loaded at startup
     "nifty_futures_token": None,    # Instrument token for NIFTY current-month fut
@@ -302,11 +326,27 @@ def attach_shared_state(external_state: dict):
     state.setdefault("websocket_status", "DISCONNECTED")
     state.setdefault("data_feed", "REST")
     state.setdefault("live_ltp", {})
+    state.setdefault("ws_reconnect_attempts", 0)
+    state.setdefault("ws_last_data_time", None)
+    state.setdefault("ws_stale_warning", False)
+    state.setdefault("feed_health", "REST")
     state.setdefault("selected_option_token", None)
     state.setdefault("filled_quantity", None)
     state.setdefault("remaining_quantity", None)
     state.setdefault("average_fill_price", None)
     state.setdefault("candle_cache", {})
+    state.setdefault("candle_calls", 0)
+    state.setdefault("ltp_calls", 0)
+    state.setdefault("order_calls", 0)
+    state.setdefault("position_calls", 0)
+    state.setdefault("websocket_ticks", 0)
+    state.setdefault("candle_rate_limits", 0)
+    state.setdefault("ltp_rate_limits", 0)
+    state.setdefault("order_rate_limits", 0)
+    state.setdefault("position_rate_limits", 0)
+    state.setdefault("candle_cache_hits", 0)
+    state.setdefault("new_candles_processed", 0)
+    state.setdefault("trailing_sl_moves", 0)
     return state
 
 
@@ -411,9 +451,12 @@ def _candle_bucket_start(dt: datetime | None = None) -> datetime:
     return current.replace(second=0, microsecond=0, minute=(current.minute // 5) * 5)
 
 
-def needs_candle_refresh(symbol: str) -> bool:
+def needs_candle_refresh(symbol: str, token: str | None = None) -> bool:
     """Return True only when a new 5-minute candle bucket has started."""
-    cache_entry = state.get("candle_cache", {}).get(symbol)
+    cache = state.get("candle_cache", {})
+    cache_entry = cache.get(str(token)) if token else None
+    if cache_entry is None:
+        cache_entry = cache.get(symbol)
     if not cache_entry:
         return True
 
@@ -424,8 +467,11 @@ def needs_candle_refresh(symbol: str) -> bool:
     return _candle_bucket_start(datetime.now(IST)) > _candle_bucket_start(last_fetch_time)
 
 
-def _get_cached_candles(symbol: str) -> pd.DataFrame | None:
-    cache_entry = state.get("candle_cache", {}).get(symbol)
+def _get_cached_candles(symbol: str, token: str | None = None) -> pd.DataFrame | None:
+    cache = state.get("candle_cache", {})
+    cache_entry = cache.get(str(token)) if token else None
+    if cache_entry is None:
+        cache_entry = cache.get(symbol)
     if not cache_entry:
         return None
 
@@ -435,12 +481,57 @@ def _get_cached_candles(symbol: str) -> pd.DataFrame | None:
     return None
 
 
-def _store_candle_cache(symbol: str, df: pd.DataFrame):
+def _store_candle_cache(token: str, symbol: str, df: pd.DataFrame):
     cache = state.setdefault("candle_cache", {})
-    cache[symbol] = {
+    entry = {
+        "symbol": symbol,
+        "token": str(token),
         "last_fetch_time": datetime.now(IST),
+        "last_completed_candle_time": None,
         "data": df.copy(deep=True),
     }
+    cache[str(token)] = entry
+    cache[symbol] = entry  # alias so symbol-keyed callers still work
+
+
+def _check_candle_cache(token: str, symbol: str, completed_df: pd.DataFrame) -> bool:
+    """
+    Returns True (cache hit) when the last completed candle timestamp is unchanged.
+    Caller should return early without running the strategy scan.
+    Logs [CANDLE_CACHE_HIT] or [NEW_CANDLE] and updates counters.
+    Stores the new timestamp in the cache entry on a miss so the next call compares correctly.
+    """
+    if completed_df is None or completed_df.empty:
+        return False
+
+    raw_ts = completed_df["timestamp"].iloc[-1]
+    try:
+        candle_time = raw_ts if isinstance(raw_ts, datetime) else pd.Timestamp(raw_ts).to_pydatetime()
+    except Exception:
+        return False
+
+    cache = state.get("candle_cache", {})
+    entry = cache.get(str(token)) or cache.get(symbol) or {}
+    prev_time = entry.get("last_completed_candle_time")
+
+    ts_str = candle_time.strftime("%H:%M") if hasattr(candle_time, "strftime") else str(candle_time)
+
+    if prev_time is not None:
+        try:
+            same = pd.Timestamp(candle_time) == pd.Timestamp(prev_time)
+        except Exception:
+            same = str(candle_time) == str(prev_time)
+        if same:
+            state["candle_cache_hits"] = int(state.get("candle_cache_hits") or 0) + 1
+            log.info(f"[CANDLE_CACHE_HIT] token={token} time={ts_str}")
+            return True
+
+    for key in (str(token), symbol):
+        if key in cache:
+            cache[key]["last_completed_candle_time"] = candle_time
+    state["new_candles_processed"] = int(state.get("new_candles_processed") or 0) + 1
+    log.info(f"[NEW_CANDLE] token={token} candle_time={ts_str}")
+    return False
 
 
 def _serialize_for_state(value):
@@ -668,11 +759,51 @@ def publish_shared_state(persist: bool = True):
     state["total_api_calls"] = int(state.get("total_api_calls") or 0)
     state["failed_api_calls"] = int(state.get("failed_api_calls") or 0)
     state["rate_limit_hits"] = int(state.get("rate_limit_hits") or 0)
+    state["candle_calls"] = int(state.get("candle_calls") or 0)
+    state["ltp_calls"] = int(state.get("ltp_calls") or 0)
+    state["order_calls"] = int(state.get("order_calls") or 0)
+    state["position_calls"] = int(state.get("position_calls") or 0)
+    state["websocket_ticks"] = int(state.get("websocket_ticks") or 0)
+    state["candle_rate_limits"] = int(state.get("candle_rate_limits") or 0)
+    state["ltp_rate_limits"] = int(state.get("ltp_rate_limits") or 0)
+    state["order_rate_limits"] = int(state.get("order_rate_limits") or 0)
+    state["position_rate_limits"] = int(state.get("position_rate_limits") or 0)
+    state["candle_cache_hits"] = int(state.get("candle_cache_hits") or 0)
+    state["new_candles_processed"] = int(state.get("new_candles_processed") or 0)
+    _total_candle_checks = state["candle_cache_hits"] + state["new_candles_processed"]
+    state["candle_api_saved_pct"] = (
+        round(100.0 * state["candle_cache_hits"] / _total_candle_checks, 1)
+        if _total_candle_checks > 0 else 0.0
+    )
+    state["trailing_sl_moves"] = int(state.get("trailing_sl_moves") or 0)
+    state["trailing_sl_enabled"] = TRAILING_SL
+    trade = state.get("active_trade")
+    state["trailing_sl_current"] = float(trade.get("sl", 0)) if isinstance(trade, dict) else 0.0
     state["entry_in_progress"] = bool(state.get("entry_in_progress"))
     state["setup_status"] = state.get("setup_status") or ("In Trade" if state.get("active_trade") else ("Signal Active" if state.get("signal") else ("Scanning" if state.get("bot_running") else "Idle")))
     state["websocket_connected"] = bool(state.get("websocket_connected"))
     state["websocket_status"] = state.get("websocket_status") or ("CONNECTED" if state["websocket_connected"] else "DISCONNECTED")
-    state["data_feed"] = "WEBSOCKET" if (USE_WEBSOCKET and state["websocket_connected"]) else "REST"
+
+    # Feed health: detect stale WebSocket even when the socket reports connected
+    ws_last = state.get("ws_last_data_time")
+    ws_stale = False
+    if state["websocket_connected"]:
+        if ws_last is None:
+            ws_stale = True  # connected but never received data
+        else:
+            ws_stale = (time.time() - float(ws_last)) > STALE_LTP_THRESHOLD_SEC
+    state["ws_stale_warning"] = ws_stale
+    state["ws_reconnect_attempts"] = int(state.get("ws_reconnect_attempts") or 0)
+
+    if USE_WEBSOCKET and state["websocket_connected"] and not ws_stale:
+        state["data_feed"] = "WEBSOCKET"
+        state["feed_health"] = "WEBSOCKET_HEALTHY"
+    elif USE_WEBSOCKET and state["websocket_connected"] and ws_stale:
+        state["data_feed"] = "REST"          # transparent REST fallback
+        state["feed_health"] = "WEBSOCKET_STALE"
+    else:
+        state["data_feed"] = "REST"
+        state["feed_health"] = "REST"
 
     bot_started = state.get("bot_start_time")
     if isinstance(bot_started, str):
@@ -839,9 +970,55 @@ def _mark_api_failure(rate_limit: bool = False):
     _record_api_call(success=False, rate_limit=rate_limit)
 
 
+def _log_api_failure(function: str, endpoint: str, message: str, rate_limit: bool, counter_key: str | None = None):
+    tag = "[RATE_LIMIT]" if rate_limit else "[API_FAILURE]"
+    log.warning(f"{tag} endpoint={endpoint} function={function} error={message}")
+    if rate_limit and counter_key:
+        state[counter_key] = int(state.get(counter_key) or 0) + 1
+
+
 def _is_rate_limit_message(message: object) -> bool:
     text = str(message or "").lower()
     return "access rate" in text or "rate limit" in text or "exceeding access" in text
+
+
+def _is_auth_error(message: object) -> bool:
+    text = str(message or "").lower()
+    keywords = (
+        "invalid token", "jwt", "unauthorized", "session expired",
+        "authentication", "token expired", "access denied", "login",
+    )
+    return any(k in text for k in keywords)
+
+
+_relogin_lock = threading.Lock()
+_last_relogin_attempt: float = 0.0
+_RELOGIN_COOLDOWN_SEC = 60.0
+
+
+def _attempt_relogin_if_needed(message: object) -> bool:
+    """
+    Re-login once per cooldown period when an API response looks like a session error.
+    Returns True if re-login succeeded.
+    """
+    global _last_relogin_attempt
+    if not auth_enabled():
+        return False
+    if not _is_auth_error(message):
+        return False
+    with _relogin_lock:
+        now = time.time()
+        if now - _last_relogin_attempt < _RELOGIN_COOLDOWN_SEC:
+            log.info("[AUTH] Re-login suppressed (cooldown active).")
+            return False
+        _last_relogin_attempt = now
+    log.warning(f"[AUTH] Session error detected — '{message}'. Attempting re-login…")
+    success = login()
+    if success:
+        log.info("[AUTH] Re-login succeeded.")
+    else:
+        log.error("[AUTH] Re-login failed.")
+    return success
 
 
 def _trade_id_now() -> str:
@@ -1239,13 +1416,19 @@ def _fetch_candles_once(token: str, symbol: str, exchange: str = "NFO",
             resp = angel.getCandleData(retry_params)
             if resp.get("status") is False:
                 message = resp.get("message")
-                _mark_api_failure(rate_limit=_is_rate_limit_message(message))
+                _rl = _is_rate_limit_message(message)
+                _log_api_failure("_fetch_candles_once", "getCandleData", str(message), _rl, "candle_rate_limits")
+                _mark_api_failure(rate_limit=_rl)
+                _attempt_relogin_if_needed(message)
                 log.warning(f"Candle fetch failed for {symbol} (lookback {days}d): {message}")
                 continue
 
             candles = resp.get("data", [])
             if not candles:
-                _mark_api_failure(rate_limit=_is_rate_limit_message(resp.get("message")))
+                _msg = resp.get("message")
+                _rl = _is_rate_limit_message(_msg)
+                _log_api_failure("_fetch_candles_once", "getCandleData", str(_msg), _rl, "candle_rate_limits")
+                _mark_api_failure(rate_limit=_rl)
                 log.warning(f"No candle data returned for {symbol} (lookback {days}d)")
                 continue
 
@@ -1253,10 +1436,14 @@ def _fetch_candles_once(token: str, symbol: str, exchange: str = "NFO",
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric)
             df = df.sort_values("timestamp").reset_index(drop=True)
+            state["candle_calls"] = int(state.get("candle_calls") or 0) + 1
+            log.info(f"[API] function=_fetch_candles_once endpoint=getCandleData symbol={symbol}")
             _update_api_health()
             return df
         except Exception as exc:
-            _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+            _rl = _is_rate_limit_message(exc)
+            _log_api_failure("_fetch_candles_once", "getCandleData", str(exc), _rl, "candle_rate_limits")
+            _mark_api_failure(rate_limit=_rl)
             log.warning(f"Exception fetching candles for {symbol} (lookback {days}d): {exc}", exc_info=True)
 
     log.error(f"Unable to fetch live candles for {symbol} after retries: {tried}")
@@ -1266,8 +1453,8 @@ def _fetch_candles_once(token: str, symbol: str, exchange: str = "NFO",
 def fetch_candles(token: str, symbol: str, exchange: str = "NFO",
                   interval: str = "FIVE_MINUTE", lookback_days: int = 1) -> pd.DataFrame:
     """Fetch candles with retry/backoff protection."""
-    if not needs_candle_refresh(symbol):
-        cached_df = _get_cached_candles(symbol)
+    if not needs_candle_refresh(symbol, token=token):
+        cached_df = _get_cached_candles(symbol, token=token)
         if cached_df is not None:
             log.info("[CACHE HIT] Using cached candles")
             return cached_df
@@ -1277,7 +1464,7 @@ def fetch_candles(token: str, symbol: str, exchange: str = "NFO",
     if use_mock_market_data():
         df = _fetch_candles_once(token, symbol, exchange=exchange, interval=interval, lookback_days=lookback_days)
         if isinstance(df, pd.DataFrame) and not df.empty:
-            _store_candle_cache(symbol, df)
+            _store_candle_cache(token, symbol, df)
         return df
 
     def _call():
@@ -1291,7 +1478,7 @@ def fetch_candles(token: str, symbol: str, exchange: str = "NFO",
         critical=True,
     )
     if isinstance(result, pd.DataFrame) and not result.empty:
-        _store_candle_cache(symbol, result)
+        _store_candle_cache(token, symbol, result)
         return result
     return pd.DataFrame()
 
@@ -1331,14 +1518,21 @@ def _get_ltp_once(token: str, symbol: str, exchange: str = "NFO") -> float:
         log.info(f"[LIVE DATA] Fetching real LTP for {symbol}")
         resp = state["angel"].ltpData(exchange, symbol, token)
         if resp.get("status"):
+            state["ltp_calls"] = int(state.get("ltp_calls") or 0) + 1
+            log.info(f"[API] function=_get_ltp_once endpoint=ltpData symbol={symbol}")
             _update_api_health()
             return float(resp["data"]["ltp"])
         message = resp.get("message")
-        _mark_api_failure(rate_limit=_is_rate_limit_message(message))
+        _rl = _is_rate_limit_message(message)
+        _log_api_failure("_get_ltp_once", "ltpData", str(message), _rl, "ltp_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
+        _attempt_relogin_if_needed(message)
         log.warning(f"LTP fetch failed for {symbol}: {message}")
         return 0.0
     except Exception as exc:
-        _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+        _rl = _is_rate_limit_message(exc)
+        _log_api_failure("_get_ltp_once", "ltpData", str(exc), _rl, "ltp_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         log.error(f"Exception getting LTP for {symbol}: {exc}", exc_info=True)
         return 0.0
 
@@ -1358,19 +1552,35 @@ def _get_cached_ltp(token: str | None, symbol: str | None) -> float | None:
 
 
 def get_ltp(token: str, symbol: str, exchange: str = "NFO") -> float:
-    """Fetch LTP with retry/backoff protection."""
-    cached = _get_cached_ltp(token, symbol)
-    if cached is not None and USE_WEBSOCKET:
-        return cached
+    """
+    Fetch LTP using the best available source.
+
+    Priority order:
+    1. WebSocket cache (if enabled, connected, and data is fresh)
+    2. REST API with retry/backoff (automatic fallback when WebSocket is stale or disabled)
+    3. Mock data (when USE_MOCK_DATA=True)
+    """
+    if USE_WEBSOCKET:
+        cached = _get_cached_ltp(token, symbol)
+        if cached is not None:
+            stale = _is_ltp_stale(str(token))
+            if not stale:
+                return cached
+            log.warning(
+                f"[FEED] WebSocket LTP for {symbol} is stale (>{STALE_LTP_THRESHOLD_SEC}s). "
+                "Falling back to REST."
+            )
+            state["ws_stale_warning"] = True
 
     if use_mock_market_data():
         return _get_ltp_once(token, symbol, exchange=exchange)
 
     def _call():
+        # Inside retry loop: re-check WebSocket cache first in case a fresh tick arrived
         if USE_WEBSOCKET:
-            cached_inner = _get_cached_ltp(token, symbol)
-            if cached_inner is not None:
-                return cached_inner
+            inner = _get_cached_ltp(token, symbol)
+            if inner is not None and not _is_ltp_stale(str(token)):
+                return inner
         value = _get_ltp_once(token, symbol, exchange=exchange)
         return value if value > 0 else None
 
@@ -1388,6 +1598,9 @@ _websocket_thread = None
 _websocket_stop_event = threading.Event()
 _websocket_lock = threading.Lock()
 _desired_ws_tokens = set()
+_ltp_timestamps: dict = {}      # token/symbol → float (time.time())
+_ws_reconnect_attempts: int = 0
+_last_bot_cycle_bucket: "datetime | None" = None
 
 
 def _ws_is_enabled() -> bool:
@@ -1401,24 +1614,39 @@ def _ws_exchange_type_for_token(_: str) -> int:
 def _set_live_ltp(token: str | None, price: float, symbol: str | None = None):
     if token is None:
         return
+    now = time.time()
     live_ltp = state.setdefault("live_ltp", {})
     live_ltp[str(token)] = price
+    _ltp_timestamps[str(token)] = now
     if symbol:
         live_ltp[str(symbol)] = price
+        _ltp_timestamps[str(symbol)] = now
+    state["ws_last_data_time"] = now
+
+
+def _is_ltp_stale(key: str) -> bool:
+    """Return True when the cached WebSocket LTP is older than STALE_LTP_THRESHOLD_SEC."""
+    ts = _ltp_timestamps.get(str(key))
+    if ts is None:
+        return True
+    return (time.time() - ts) > STALE_LTP_THRESHOLD_SEC
 
 
 def _parse_ws_ltp(raw_price) -> float:
+    # Angel SmartWebSocketV2 always sends prices in paise (×100 of rupees)
     price = _safe_float(raw_price, 0.0)
     if price <= 0:
         return 0.0
-    if price > 1000:
-        return round(price / 100.0, 2)
-    return round(price, 2)
+    return round(price / 100.0, 2)
 
 
 def _ws_on_open(wsapp):
+    global _ws_reconnect_attempts
     state["websocket_connected"] = True
     state["websocket_status"] = "CONNECTED"
+    state["ws_reconnect_attempts"] = 0
+    state["ws_stale_warning"] = False
+    _ws_reconnect_attempts = 0
     _update_api_health()
     publish_shared_state()
     _apply_websocket_subscriptions(force=True)
@@ -1445,7 +1673,8 @@ def _ws_on_data(wsapp, parsed_message):
         return
     symbol = state.get("ws_token_symbol_map", {}).get(str(token))
     _set_live_ltp(str(token), ltp, symbol=symbol)
-    _update_api_health()
+    state["websocket_ticks"] = int(state.get("websocket_ticks") or 0) + 1
+    state["api_connected"] = True
 
 
 def _desired_websocket_tokens() -> set[str]:
@@ -1483,23 +1712,32 @@ def _apply_websocket_subscriptions(force: bool = False):
             _desired_ws_tokens = desired
             return
 
-        to_add = desired - _desired_ws_tokens
-        to_remove = _desired_ws_tokens - desired
-        if not to_add and not to_remove and not force:
+        # force=True means reconnect — re-subscribe to ALL desired tokens, not just the diff.
+        # Without this, to_add would be empty (since _desired_ws_tokens already equals desired
+        # from the previous connection) and subscribe() would be skipped entirely.
+        if force:
+            to_subscribe = desired
+            to_remove    = set()
+        else:
+            to_subscribe = desired - _desired_ws_tokens
+            to_remove    = _desired_ws_tokens - desired
+
+        if not to_subscribe and not to_remove:
+            _desired_ws_tokens = desired
             return
 
         if to_remove:
-            token_list = [{"exchangeType": _ws_exchange_type_for_token(token), "tokens": [token]} for token in to_remove]
+            token_list = [{"exchangeType": _ws_exchange_type_for_token(t), "tokens": [t]} for t in to_remove]
             try:
                 client.unsubscribe("VWAP-UNSUB", SmartWebSocketV2.LTP_MODE, token_list)
             except Exception as exc:
                 log.warning(f"[WEBSOCKET] Unsubscribe failed: {exc}", exc_info=True)
 
-        if to_add:
-            token_list = [{"exchangeType": _ws_exchange_type_for_token(token), "tokens": [token]} for token in to_add]
+        if to_subscribe:
+            token_list = [{"exchangeType": _ws_exchange_type_for_token(t), "tokens": [t]} for t in to_subscribe]
             try:
                 client.subscribe("VWAP-SUB", SmartWebSocketV2.LTP_MODE, token_list)
-                for token in to_add:
+                for token in to_subscribe:
                     if token == str(state.get("nifty_futures_token")):
                         symbol_map[token] = state.get("nifty_futures_symbol")
                     if state.get("selected_option_token") and token == str(state.get("selected_option_token")):
@@ -1507,17 +1745,20 @@ def _apply_websocket_subscriptions(force: bool = False):
                     active_trade = state.get("active_trade") or {}
                     if isinstance(active_trade, dict) and token == str(active_trade.get("token")):
                         symbol_map[token] = active_trade.get("symbol")
+                _desired_ws_tokens = desired   # only mark as done after subscribe succeeds
+                log.info(f"[WEBSOCKET] Subscribed {len(to_subscribe)} token(s): {to_subscribe}")
             except Exception as exc:
+                # Do NOT update _desired_ws_tokens — next call will retry the missing tokens
                 log.warning(f"[WEBSOCKET] Subscribe failed: {exc}", exc_info=True)
-
-        _desired_ws_tokens = desired
+        else:
+            _desired_ws_tokens = desired
 
 
 def _websocket_loop(stop_event: threading.Event):
     if not _ws_is_enabled():
         return
 
-    global _websocket_client
+    global _websocket_client, _ws_reconnect_attempts
     while not stop_event.is_set() and state.get("bot_active", True):
         try:
             client = SmartWebSocketV2(
@@ -1540,8 +1781,19 @@ def _websocket_loop(stop_event: threading.Event):
             state["websocket_connected"] = False
             state["websocket_status"] = "DISCONNECTED"
             publish_shared_state()
+
         if not stop_event.is_set():
-            time.sleep(5)
+            _ws_reconnect_attempts += 1
+            state["ws_reconnect_attempts"] = _ws_reconnect_attempts
+            # Exponential backoff: 5s, 10s, 20s, 40s, 80s, 160s, 300s max; +jitter
+            base_delay = min(5 * (2 ** min(_ws_reconnect_attempts - 1, 6)), 300)
+            jitter = random.uniform(0, base_delay * 0.2)
+            delay = base_delay + jitter
+            log.info(
+                f"[WEBSOCKET] Reconnect attempt {_ws_reconnect_attempts} "
+                f"in {delay:.1f}s (backoff)…"
+            )
+            stop_event.wait(delay)
 
 
 def start_websocket_feed(stop_event: threading.Event):
@@ -1649,8 +1901,12 @@ def _find_order_row(order_id: str) -> dict | None:
             return None
         for order in resp.get("data", []) or []:
             if str(order.get("orderid") or order.get("orderId")) == str(order_id):
+                state["position_calls"] = int(state.get("position_calls") or 0) + 1
+                log.info(f"[API] function=_find_order_row endpoint=orderBook order_id={order_id}")
                 _update_api_health()
                 return order
+        state["position_calls"] = int(state.get("position_calls") or 0) + 1
+        log.info(f"[API] function=_find_order_row endpoint=orderBook order_id={order_id}")
         _update_api_health()
         return None
     except Exception as exc:
@@ -1703,7 +1959,7 @@ def _place_order_once(symbol: str, token: str, transaction_type: str,
     symbol           : Trading symbol (e.g. "NIFTY25JUN23500CE")
     token            : Instrument token
     transaction_type : "BUY" or "SELL"
-    quantity         : Number of units (lots × lot_size)
+    quantity         : Number of LOTS (multiplied by lot_size internally)
     order_type       : "MARKET", "LIMIT", "SL", "SL-M"
     price            : Limit price (0 for MARKET)
     trigger_price    : Trigger price for SL orders
@@ -1730,6 +1986,8 @@ def _place_order_once(symbol: str, token: str, transaction_type: str,
         state["filled_quantity"] = fill_qty
         state["remaining_quantity"] = 0
         state["average_fill_price"] = price or trigger_price or 0.0
+        state["order_calls"] = int(state.get("order_calls") or 0) + 1
+        log.info(f"[API] function=_place_order_once endpoint=placeOrder(paper) symbol={symbol} type={transaction_type}")
         log.info(
             f"[PAPER ORDER] Simulating {transaction_type} order for {qty} × {symbol} | "
             f"Type: {order_type} | Price: ₹{price:.2f} | Trigger: ₹{trigger_price:.2f} "
@@ -1739,8 +1997,9 @@ def _place_order_once(symbol: str, token: str, transaction_type: str,
         return dummy_id
 
     try:
+        _is_sl_order = order_type.upper() in {"SL", "SL-M", "SLM"}
         order_params = {
-            "variety":         "NORMAL",
+            "variety":         "STOPLOSS" if _is_sl_order else "NORMAL",
             "tradingsymbol":   symbol,
             "symboltoken":     token,
             "transactiontype": transaction_type,
@@ -1757,6 +2016,8 @@ def _place_order_once(symbol: str, token: str, transaction_type: str,
         resp = state["angel"].placeOrder(order_params)
         if resp.get("status"):
             order_id = resp["data"]["orderid"]
+            state["order_calls"] = int(state.get("order_calls") or 0) + 1
+            log.info(f"[API] function=_place_order_once endpoint=placeOrder symbol={symbol} type={transaction_type}")
             _update_api_health()
             log.info(
                 f"Order placed: {transaction_type} {qty} × {symbol} "
@@ -1771,12 +2032,16 @@ def _place_order_once(symbol: str, token: str, transaction_type: str,
             return order_id
         else:
             message = resp.get("message")
-            _mark_api_failure(rate_limit=_is_rate_limit_message(message))
+            _rl = _is_rate_limit_message(message)
+            _log_api_failure("_place_order_once", "placeOrder", str(message), _rl, "order_rate_limits")
+            _mark_api_failure(rate_limit=_rl)
             log.error(f"Order failed for {symbol}: {message}")
             return None
 
     except Exception as exc:
-        _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+        _rl = _is_rate_limit_message(exc)
+        _log_api_failure("_place_order_once", "placeOrder", str(exc), _rl, "order_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         log.error(f"Exception placing order for {symbol}: {exc}", exc_info=True)
         return None
 
@@ -1825,8 +2090,9 @@ def place_stop_loss_order(symbol: str, token: str, quantity: int, trigger_price:
         wait_for_completion=False,
     )
     if order_id:
-        state["sl_order_id"] = order_id
-        state["sl_status"] = "PENDING"
+        with state_lock:
+            state["sl_order_id"] = order_id
+            state["sl_status"] = "PENDING"
         log.info(f"SL order placed | ID: {order_id} | Trigger: ₹{trigger_price:.2f}")
         publish_shared_state()
     return order_id
@@ -1834,13 +2100,15 @@ def place_stop_loss_order(symbol: str, token: str, quantity: int, trigger_price:
 
 def cancel_active_sl_order() -> bool:
     """Cancel the current SL order, if one exists."""
-    sl_order_id = state.get("sl_order_id")
+    with state_lock:
+        sl_order_id = state.get("sl_order_id")
     if not sl_order_id:
         return False
 
-    success = cancel_order(sl_order_id)
+    success = cancel_order(sl_order_id)   # API call — outside lock
     if success:
-        state["sl_status"] = "CANCELLED"
+        with state_lock:
+            state["sl_status"] = "CANCELLED"
         log.info("SL order cancelled")
         publish_shared_state()
     return success
@@ -1849,6 +2117,8 @@ def cancel_active_sl_order() -> bool:
 def cancel_order(order_id: str, variety: str = "NORMAL") -> bool:
     """Cancel a pending order. Returns True on success."""
     if PAPER_TRADE:
+        state["order_calls"] = int(state.get("order_calls") or 0) + 1
+        log.info(f"[API] function=cancel_order endpoint=cancelOrder(paper) order_id={order_id}")
         log.info(f"[PAPER] Cancel order: {order_id}")
         _update_api_health()
         return True
@@ -1856,15 +2126,21 @@ def cancel_order(order_id: str, variety: str = "NORMAL") -> bool:
         resp = state["angel"].cancelOrder(order_id, variety)
         success = resp.get("status", False)
         if success:
+            state["order_calls"] = int(state.get("order_calls") or 0) + 1
+            log.info(f"[API] function=cancel_order endpoint=cancelOrder order_id={order_id}")
             _update_api_health()
             log.info(f"Order cancelled: {order_id}")
         else:
             message = resp.get("message")
-            _mark_api_failure(rate_limit=_is_rate_limit_message(message))
+            _rl = _is_rate_limit_message(message)
+            _log_api_failure("cancel_order", "cancelOrder", str(message), _rl, "order_rate_limits")
+            _mark_api_failure(rate_limit=_rl)
             log.warning(f"Cancel failed for {order_id}: {message}")
         return success
     except Exception as exc:
-        _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+        _rl = _is_rate_limit_message(exc)
+        _log_api_failure("cancel_order", "cancelOrder", str(exc), _rl, "order_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         log.error(f"Exception cancelling order {order_id}: {exc}", exc_info=True)
         return False
 
@@ -1882,12 +2158,19 @@ def get_order_status(order_id: str) -> str:
         if book.get("status"):
             for order in book["data"]:
                 if order.get("orderid") == order_id:
+                    state["position_calls"] = int(state.get("position_calls") or 0) + 1
+                    log.info(f"[API] function=get_order_status endpoint=orderBook order_id={order_id}")
                     _update_api_health()
                     return order.get("status", "unknown").lower()
-        _mark_api_failure(rate_limit=_is_rate_limit_message(book.get("message")))
+        _msg = book.get("message")
+        _rl = _is_rate_limit_message(_msg)
+        _log_api_failure("get_order_status", "orderBook", str(_msg), _rl, "position_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         return "unknown"
     except Exception as exc:
-        _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+        _rl = _is_rate_limit_message(exc)
+        _log_api_failure("get_order_status", "orderBook", str(exc), _rl, "position_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         log.error(f"Exception fetching order status for {order_id}: {exc}", exc_info=True)
         return "unknown"
 
@@ -1910,13 +2193,20 @@ def _extract_positions() -> list[dict]:
         else:
             resp = angel.position()
         if not resp.get("status"):
-            _mark_api_failure(rate_limit=_is_rate_limit_message(resp.get("message")))
+            _msg = resp.get("message")
+            _rl = _is_rate_limit_message(_msg)
+            _log_api_failure("_extract_positions", "positionBook", str(_msg), _rl, "position_rate_limits")
+            _mark_api_failure(rate_limit=_rl)
             return []
         data = resp.get("data", [])
+        state["position_calls"] = int(state.get("position_calls") or 0) + 1
+        log.info("[API] function=_extract_positions endpoint=positionBook")
         _update_api_health()
         return data if isinstance(data, list) else []
     except Exception as exc:
-        _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+        _rl = _is_rate_limit_message(exc)
+        _log_api_failure("_extract_positions", "positionBook", str(exc), _rl, "position_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         log.error(f"Exception fetching position book: {exc}", exc_info=True)
         return []
 
@@ -1927,13 +2217,20 @@ def _extract_orders() -> list[dict]:
     try:
         resp = state["angel"].orderBook()
         if not resp.get("status"):
-            _mark_api_failure(rate_limit=_is_rate_limit_message(resp.get("message")))
+            _msg = resp.get("message")
+            _rl = _is_rate_limit_message(_msg)
+            _log_api_failure("_extract_orders", "orderBook", str(_msg), _rl, "position_rate_limits")
+            _mark_api_failure(rate_limit=_rl)
             return []
         data = resp.get("data", [])
+        state["position_calls"] = int(state.get("position_calls") or 0) + 1
+        log.info("[API] function=_extract_orders endpoint=orderBook")
         _update_api_health()
         return data if isinstance(data, list) else []
     except Exception as exc:
-        _mark_api_failure(rate_limit=_is_rate_limit_message(exc))
+        _rl = _is_rate_limit_message(exc)
+        _log_api_failure("_extract_orders", "orderBook", str(exc), _rl, "position_rate_limits")
+        _mark_api_failure(rate_limit=_rl)
         log.error(f"Exception fetching order book: {exc}", exc_info=True)
         return []
 
@@ -2121,19 +2418,26 @@ def exit_active_trade(exit_price: float, reason: str, broker_exit: bool = True):
     Close the active trade at the given exit price and update P&L.
     In live mode: places a MARKET SELL order to square off.
     """
-    trade = state["active_trade"]
-    if trade is None:
-        return
+    # Atomically claim the trade — prevents double-exit if Flask and LTP monitor
+    # both call this simultaneously (e.g. emergency exit + target hit).
+    with state_lock:
+        trade = state.get("active_trade")
+        if trade is None:
+            return
+        state["active_trade"] = None  # claimed; all other callers will see None
 
     log.info(f"Exiting trade: {trade['symbol']} | Reason: {reason} | Exit: ₹{exit_price:.2f}")
 
     # Place the exit order
     if broker_exit:
+        # filled_quantity is in units; _place_order_once expects lots
+        filled_units = _safe_int(trade.get("filled_quantity"), LOTS * effective_lot_size())
+        lots_to_exit = max(1, round(filled_units / effective_lot_size()))
         place_order(
             symbol           = trade["symbol"],
             token            = trade["token"],
             transaction_type = "SELL",
-            quantity         = _safe_int(trade.get("filled_quantity"), LOTS * effective_lot_size()),
+            quantity         = lots_to_exit,
             order_type       = "MARKET",
         )
 
@@ -2172,18 +2476,92 @@ def exit_active_trade(exit_price: float, reason: str, broker_exit: bool = True):
     elif reason == "EOD SQUAREOFF":
         send_telegram(f"🕒 EOD SQUAREOFF\nP&L: ₹{pnl:.2f}")
 
-    # Clear active trade state
-    state["active_trade"]    = None
-    state["trade_order_id"]  = None
-    state["sl_status"]       = None
-    state["target_order_id"] = None
-    state["entry_in_progress"] = False
-    state["filled_quantity"] = None
-    state["remaining_quantity"] = None
-    state["average_fill_price"] = None
+    # Atomic cleanup of all order/fill state fields.
+    # active_trade was already cleared at the top of this function.
+    with state_lock:
+        state["trade_order_id"]  = None
+        state["sl_status"]       = None
+        state["target_order_id"] = None
+        state["entry_in_progress"] = False
+        state["filled_quantity"] = None
+        state["remaining_quantity"] = None
+        state["average_fill_price"] = None
     if USE_WEBSOCKET:
         _apply_websocket_subscriptions(force=True)
     publish_shared_state()
+
+
+def _apply_trailing_sl(ltp: float, trade: dict) -> bool:
+    """
+    Adjust SL upward based on trailing rules.  Returns True if SL moved.
+
+    Phase 1 — Breakeven: when LTP >= entry + BREAKEVEN_AT*(target-entry),
+               move SL to entry price (never lose on the trade).
+    Phase 2 — Fixed trail: after breakeven, trail SL at (highest_ltp - TRAIL_POINTS).
+               Only applies when TRAIL_POINTS > 0.
+
+    The in-memory SL is updated first so the software monitor is always current,
+    then the broker SL order is replaced (cancel old → place new).
+    """
+    if not TRAILING_SL:
+        return False
+
+    entry      = float(trade.get("entry_price", 0))
+    current_sl = float(trade.get("sl", 0))
+    target     = float(trade.get("target", 0))
+
+    if entry == 0 or target == 0:
+        return False
+
+    # Track peak LTP
+    highest = max(float(trade.get("highest_ltp", ltp)), ltp)
+    trade["highest_ltp"] = highest
+
+    new_sl = current_sl
+
+    # Phase 1: move to breakeven
+    breakeven_trigger = entry + (target - entry) * BREAKEVEN_AT
+    if ltp >= breakeven_trigger and current_sl < entry:
+        new_sl = entry
+        log.info(
+            f"[TRAILING SL] Breakeven triggered at LTP ₹{ltp:.2f} "
+            f"(trigger ₹{breakeven_trigger:.2f}) — SL → ₹{entry:.2f}"
+        )
+
+    # Phase 2: trail below peak
+    if TRAIL_POINTS > 0 and current_sl >= entry:
+        trail_candidate = highest - TRAIL_POINTS
+        if trail_candidate > new_sl:
+            new_sl = trail_candidate
+
+    if new_sl <= current_sl:
+        return False
+
+    log.info(f"[TRAILING SL] SL moved ₹{current_sl:.2f} → ₹{new_sl:.2f}  (LTP ₹{ltp:.2f})")
+
+    # Update in-memory SL first — software monitor uses this even if broker update fails
+    trade["sl"] = new_sl
+    state["trailing_sl_moves"] = int(state.get("trailing_sl_moves") or 0) + 1
+
+    # Replace broker SL order
+    cancel_active_sl_order()
+    new_sl_order_id = place_stop_loss_order(
+        symbol=trade["symbol"],
+        token=trade["token"],
+        quantity=LOTS,
+        trigger_price=new_sl,
+    )
+    if not new_sl_order_id and not PAPER_TRADE:
+        log.warning("[TRAILING SL] Broker SL update failed — software SL active at new level")
+
+    send_telegram(
+        f"Trailing SL updated\n"
+        f"{trade.get('symbol', '')}\n"
+        f"Old SL: ₹{current_sl:.2f}  →  New SL: ₹{new_sl:.2f}\n"
+        f"LTP: ₹{ltp:.2f}"
+    )
+    publish_shared_state()
+    return True
 
 
 def check_active_trade_exit(ltp: float):
@@ -2208,14 +2586,20 @@ def check_active_trade_exit(ltp: float):
     state["last_ltp_update"] = datetime.now(IST).strftime("%H:%M:%S")
     publish_shared_state()
 
+    # Adjust trailing SL before checking exits — updates trade["sl"] in place
+    _apply_trailing_sl(ltp, trade)
+    sl = trade["sl"]   # re-read after potential trailing update
+
     if ltp >= target:
         log.info("[LTP MONITOR] Target hit")
-        sl_order_id = state.get("sl_order_id")
+        with state_lock:
+            sl_order_id = state.get("sl_order_id")
         exit_active_trade(ltp, reason="TARGET HIT", broker_exit=True)
         if sl_order_id:
-            if cancel_order(sl_order_id):
-                state["sl_status"] = "CANCELLED"
-                state["sl_order_id"] = None
+            if cancel_order(sl_order_id):   # API call — outside lock
+                with state_lock:
+                    state["sl_status"] = "CANCELLED"
+                    state["sl_order_id"] = None
                 log.info("SL order cancelled")
                 publish_shared_state()
 
@@ -2226,8 +2610,9 @@ def check_active_trade_exit(ltp: float):
             exit_active_trade(ltp, reason="STOP LOSS HIT", broker_exit=True)
         else:
             exit_active_trade(ltp, reason="STOP LOSS HIT", broker_exit=False)
-        state["sl_order_id"] = None
-        state["sl_status"] = "TRIGGERED"
+        with state_lock:
+            state["sl_order_id"] = None
+            state["sl_status"] = "TRIGGERED"
         publish_shared_state()
 
     # If approaching 3:00 PM, square off to avoid overnight position
@@ -2314,11 +2699,14 @@ def _is_signal_expired(signal: dict, now: datetime | None = None) -> bool:
 
 
 def _clear_signal(reason: str) -> None:
-    if state.get("signal") is None:
-        return
+    # Hold lock only for the state mutation; I/O happens outside.
+    with state_lock:
+        sig = state.get("signal")
+        if sig is None:
+            return
+        state["signal"] = None
     log.info(f"{datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')} SIGNAL CLEARED | {reason}")
-    log_signal_cleared(state.get("signal"), reason)
-    state["signal"] = None
+    log_signal_cleared(sig, reason)
     if USE_WEBSOCKET:
         _apply_websocket_subscriptions(force=True)
     publish_shared_state()
@@ -2383,7 +2771,15 @@ def _bot_cycle_impl(instruments_df: pd.DataFrame):
     9.  Wait for the next candle, then fetch option LTP; if LTP >= signal close → execute BUY
     10. Log every action
     """
+    global _last_bot_cycle_bucket
     now = datetime.now(IST)
+    current_bucket = _candle_bucket_start(now)
+    if _last_bot_cycle_bucket is not None and current_bucket <= _last_bot_cycle_bucket:
+        log.debug(
+            f"[BOT CYCLE] Skipping — already scanned candle bucket {current_bucket.strftime('%H:%M')}."
+        )
+        return
+    _last_bot_cycle_bucket = current_bucket
     log.info(f"── Bot cycle at {now.strftime('%H:%M:%S')} ──────────────────────")
 
     # ── 1. Trading window check ──────────────────────────────────────────────
@@ -2424,6 +2820,9 @@ def _bot_cycle_impl(instruments_df: pd.DataFrame):
     fut_completed_df = _completed_candles_only(fut_df)
     if fut_completed_df.empty or len(fut_completed_df) < 2:
         log.warning("Not enough completed NIFTY Futures candles. Skipping cycle.")
+        return
+
+    if _check_candle_cache(fut_token, fut_symbol, fut_completed_df):
         return
 
     fut_vwap = calculate_vwap(fut_completed_df)
@@ -2487,6 +2886,9 @@ def _bot_cycle_impl(instruments_df: pd.DataFrame):
         log.warning(f"Not enough completed option candles for {opt_symbol}. Skipping.")
         return
 
+    if _check_candle_cache(opt_token, opt_symbol, opt_completed_df):
+        return
+
     opt_vwap = calculate_vwap(opt_completed_df)
     log.info(
         f"Option last completed candle | Timestamp: {opt_completed_df['timestamp'].iloc[-1]} | "
@@ -2506,35 +2908,42 @@ def _bot_cycle_impl(instruments_df: pd.DataFrame):
         confirmation_candle_start = signal_time + timedelta(minutes=5)
         signal_expiry_time = signal_created_at + timedelta(minutes=5 * SIGNAL_EXPIRY_CANDLES)
 
-        # Discard stale crossovers (older than what we already have)
-        if (state["signal"] is None or
-                crossover_idx > state["signal"]["crossover_candle_index"]):
+        # Build the new signal dict before acquiring the lock (no I/O inside lock).
+        new_signal = {
+            "option_symbol":          opt_symbol,
+            "option_token":           opt_token,
+            "crossover_candle_index": crossover_idx,
+            "candle_time":            signal_time,
+            "signal_time":            signal_time,
+            "signal_created_at":      signal_created_at,
+            "signal_expiry_time":     signal_expiry_time,
+            "confirmation_candle_start": confirmation_candle_start,
+            "waiting_for_confirmation": True,
+            "crossover_time":         signal_time,
+            "crossover_close":        round(signal_close, 2),
+            "crossover_high":         round(signal_high, 2),
+            "crossover_low":          round(signal_low, 2),
+            "entry":                  round(signal_high, 2),
+            "atm_strike":             atm_strike,
+            "selected_strike":        target_strike,
+            "itm_distance":           itm_distance,
+            "option_type":            option_type,
+            "signal_high":            round(signal_high, 2),
+            "signal_low":             round(signal_low, 2),
+            "signal_close":           round(signal_close, 2),
+            "sl":                     round(signal_low, 2),
+            "direction":              direction,
+        }
 
-            state["signal"] = {
-                "option_symbol":          opt_symbol,
-                "option_token":           opt_token,
-                "crossover_candle_index": crossover_idx,
-                "candle_time":            signal_time,
-                "signal_time":            signal_time,
-                "signal_created_at":      signal_created_at,
-                "signal_expiry_time":     signal_expiry_time,
-                "confirmation_candle_start": confirmation_candle_start,
-                "waiting_for_confirmation": True,
-                "crossover_time":         signal_time,
-                "crossover_close":        round(signal_close, 2),
-                "crossover_high":         round(signal_high, 2),
-                "crossover_low":          round(signal_low, 2),
-                "entry":                  round(signal_high, 2),
-                "atm_strike":             atm_strike,
-                "selected_strike":        target_strike,
-                "itm_distance":           itm_distance,
-                "option_type":            option_type,
-                "signal_high":            round(signal_high, 2),
-                "signal_low":             round(signal_low, 2),
-                "signal_close":           round(signal_close, 2),
-                "sl":                     round(signal_low, 2),
-                "direction":              direction,
-            }
+        # Atomic read-compare-write: discard stale crossovers.
+        _signal_written = False
+        with state_lock:
+            cur = state.get("signal")
+            if cur is None or crossover_idx > cur["crossover_candle_index"]:
+                state["signal"] = new_signal
+                _signal_written = True
+
+        if _signal_written:
             if USE_WEBSOCKET:
                 _apply_websocket_subscriptions(force=True)
 
@@ -2552,7 +2961,7 @@ def _bot_cycle_impl(instruments_df: pd.DataFrame):
                 f"Close: ₹{signal_close:.2f} | Low: ₹{signal_low:.2f} | "
                 f"High: ₹{signal_high:.2f}"
             )
-            log_signal_created(state["signal"])
+            log_signal_created(new_signal)
     else:
         log.info("No VWAP crossover detected this cycle.")
 
@@ -2574,21 +2983,38 @@ def _bot_cycle_impl(instruments_df: pd.DataFrame):
 
 def _execute_signal_entry(sig: dict, opt_ltp: float, now: datetime) -> bool:
     """Execute the breakout entry for a live or paper signal."""
-    if not sig or state.get("signal") is None:
-        log.info("[LTP MONITOR] No active signal. BUY skipped.")
-        return False
-    if state.get("active_trade") is not None:
-        log.info("[LTP MONITOR] Active trade already exists. BUY skipped.")
-        return False
-    if state.get("entry_in_progress"):
-        log.info("[LTP MONITOR] Entry already in progress. Skipping duplicate BUY.")
-        return False
-    if _is_signal_expired(sig, now):
+    # ── Atomic pre-flight ────────────────────────────────────────────────────
+    # All guard checks AND the entry_in_progress claim happen inside a single
+    # lock acquisition so that no other thread can slip between them.
+    # The identity check (is not sig) detects signal replacement: bot_cycle may
+    # have swapped in a new signal between the LTP monitor's last read and here.
+    _expire_signal = False
+    with state_lock:
+        if not sig or state.get("signal") is not sig:
+            log.info("[LTP MONITOR] No active signal (or signal replaced). BUY skipped.")
+            return False
+        if state.get("active_trade") is not None:
+            log.info("[LTP MONITOR] Active trade already exists. BUY skipped.")
+            return False
+        if state.get("entry_in_progress"):
+            log.info("[LTP MONITOR] Entry already in progress. Skipping duplicate BUY.")
+            return False
+        if _is_signal_expired(sig, now):
+            state["signal"] = None   # clear atomically; audit/WS happens below
+            _expire_signal = True
+        elif not _is_after_signal_candle(sig, now):
+            log.info("[LTP MONITOR] Waiting for confirmation candle. BUY skipped.")
+            return False
+        else:
+            state["entry_in_progress"] = True   # claim entry slot atomically
+
+    # Handle expiry outside the lock (I/O: logging, CSV, WebSocket, disk)
+    if _expire_signal:
         log.info("[LTP MONITOR] Signal expired before BUY. Skipping entry.")
-        _clear_signal("SIGNAL EXPIRED")
-        return False
-    if not _is_after_signal_candle(sig, now):
-        log.info("[LTP MONITOR] Waiting for confirmation candle. BUY skipped.")
+        log_signal_expired(sig, "SIGNAL EXPIRED")
+        if USE_WEBSOCKET:
+            _apply_websocket_subscriptions(force=True)
+        publish_shared_state()
         return False
 
     opt_symbol = sig["option_symbol"]
@@ -2596,7 +3022,6 @@ def _execute_signal_entry(sig: dict, opt_ltp: float, now: datetime) -> bool:
     signal_close = _safe_float(sig.get("signal_close"), _safe_float(sig.get("entry")))
     signal_high = _signal_entry_price(sig)
     signal_low = _safe_float(sig.get("signal_low"), _safe_float(sig.get("sl")))
-    state["entry_in_progress"] = True
     trade_id = _trade_id_now()
 
     try:
@@ -2638,37 +3063,47 @@ def _execute_signal_entry(sig: dict, opt_ltp: float, now: datetime) -> bool:
 
         entry_price = signal_high
         risk = max(entry_price - signal_low, 0.0)
-        target = entry_price + (2 * risk)
+        target = entry_price + FIXED_TARGET if FIXED_TARGET > 0 else entry_price + (RR_RATIO * risk)
 
-        state["active_trade"] = {
-            "trade_id":     trade_id,
-            "symbol":       opt_symbol,
-            "token":        opt_token,
-            "direction":    sig["direction"],
-            "crossover_time": sig.get("crossover_time") or sig.get("signal_time") or sig.get("candle_time"),
-            "crossover_close": sig.get("crossover_close") or sig.get("signal_close"),
-            "crossover_high": sig.get("crossover_high") or sig.get("signal_high"),
-            "crossover_low": sig.get("crossover_low") or sig.get("signal_low"),
-            "entry_trigger_price": signal_high,
-            "entry_price":  entry_price,
-            "current_ltp":  opt_ltp,
-            "sl":           signal_low,
-            "target":       target,
-            "entry_time":   now.strftime("%H:%M:%S"),
-            "order_id":     order_id,
-            "filled_quantity": fill_qty,
-            "remaining_quantity": remaining_qty,
-            "average_fill_price": entry_price,
-        }
-        state["last_ltp_update"] = datetime.now(IST).strftime("%H:%M:%S")
+        # ── Atomic state commit ─────────────────────────────────────────────
+        # Write active_trade, trade_order_id, and signal nullification in one
+        # lock so no other thread can observe a half-committed state.
+        # Note: do NOT call _clear_signal here — it acquires state_lock itself.
+        with state_lock:
+            state["active_trade"] = {
+                "trade_id":     trade_id,
+                "symbol":       opt_symbol,
+                "token":        opt_token,
+                "direction":    sig["direction"],
+                "crossover_time": sig.get("crossover_time") or sig.get("signal_time") or sig.get("candle_time"),
+                "crossover_close": sig.get("crossover_close") or sig.get("signal_close"),
+                "crossover_high": sig.get("crossover_high") or sig.get("signal_high"),
+                "crossover_low": sig.get("crossover_low") or sig.get("signal_low"),
+                "entry_trigger_price": signal_high,
+                "entry_price":  entry_price,
+                "current_ltp":  opt_ltp,
+                "highest_ltp":  opt_ltp,
+                "sl":           signal_low,
+                "target":       target,
+                "entry_time":   now.strftime("%H:%M:%S"),
+                "order_id":     order_id,
+                "filled_quantity": fill_qty,
+                "remaining_quantity": remaining_qty,
+                "average_fill_price": entry_price,
+            }
+            state["last_ltp_update"] = datetime.now(IST).strftime("%H:%M:%S")
+            state["trade_order_id"] = order_id
+            state["signal"] = None   # clear signal atomically with trade open
+        # ────────────────────────────────────────────────────────────────────
+
         state.setdefault("ws_token_symbol_map", {})[str(opt_token)] = opt_symbol
-        state["trade_order_id"] = order_id
-        _clear_signal("TRADE EXECUTED")
+        # Audit log for signal cleared (I/O outside lock)
+        log_signal_cleared(sig, "TRADE EXECUTED")
 
         sl_order_id = place_stop_loss_order(
             symbol=opt_symbol,
             token=opt_token,
-            quantity=fill_qty,
+            quantity=LOTS,      # always in lots — matches entry order
             trigger_price=signal_low,
         )
         if not sl_order_id and not PAPER_TRADE:
@@ -2700,7 +3135,8 @@ def _execute_signal_entry(sig: dict, opt_ltp: float, now: datetime) -> bool:
         publish_shared_state()
         return True
     finally:
-        state["entry_in_progress"] = False
+        with state_lock:
+            state["entry_in_progress"] = False
 
 
 def ltp_monitor_loop(stop_event: threading.Event):
@@ -2851,6 +3287,19 @@ def reset_paper_state() -> bool:
             "total_api_calls": 0,
             "failed_api_calls": 0,
             "rate_limit_hits": 0,
+            "candle_calls": 0,
+            "ltp_calls": 0,
+            "order_calls": 0,
+            "position_calls": 0,
+            "websocket_ticks": 0,
+            "candle_rate_limits": 0,
+            "ltp_rate_limits": 0,
+            "order_rate_limits": 0,
+            "position_rate_limits": 0,
+            "candle_cache_hits": 0,
+            "new_candles_processed": 0,
+            "candle_cache": {},
+            "trailing_sl_moves": 0,
             "direction": None,
             "selected_option": None,
             "selected_option_token": None,

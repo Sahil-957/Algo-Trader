@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile app.py vwap_strategy_bot.py)",
+      "Bash(python -m py_compile vwap_strategy_bot.py)",
+      "Bash(python -m py_compile app.py)",
+      "Bash(python -c ' *)",
+      "Bash(python -c \"import vwap_strategy_bot as b; import inspect; src = inspect.getsource\\(b._fetch_candles_once\\); print\\(src[2000:]\\)\")",
+      "Bash(python -m py_compile backtest.py)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(cd /c/Users/sahil/OneDrive/Desktop/\"trading BOT\" && find . -type f -name \"*.py\" | head -50)",
+      "Read(//c/c/Users/sahil/OneDrive/Desktop/**)",
+      "Bash(python -m py_compile preflight_check.py)"
+    ]
+  }
+}
