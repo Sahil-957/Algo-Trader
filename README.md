@@ -7,7 +7,6 @@ This project runs an intraday options strategy for NSE F&O using Angel One Smart
 - `app.py` runs the Flask server on `http://localhost:5000`, starts the bot in a background thread, and exposes the API endpoints used by the dashboard.
 - `vwap_strategy_bot.py` contains the strategy engine, paper-trading mocks, order logic, risk checks, and shared state updates.
 - `dashboard.html` is the browser UI for bot status, signal details, the trade log, and recent activity messages.
-- `.env` stores your personal Angel One credentials and strategy settings.
 - `.env.example` is a template you can copy to create your local `.env`.
 - `requirements.txt` lists the Python dependencies.
 
